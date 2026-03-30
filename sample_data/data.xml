@@ -1,0 +1,73 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<Document xmlns="http://ferc.gov/etariffExport.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ferc_filing_data>
+    <schema_version>2</schema_version>
+    <company_id>C000084</company_id>
+    <lead_applicant_id xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" />
+    <tariff_id>2</tariff_id>
+    <tariff_title>Algonquin Database 1</tariff_title>
+    <tariff_export_date>2026-03-07T15:51Z</tariff_export_date>
+    <export_schema_version>2</export_schema_version>
+    <record_data>
+      <record_id>2104</record_id>
+      <option_code>A</option_code>
+      <record_title>PSEG Power - contract 511047</record_title>
+      <record_content_desc>1.</record_content_desc>
+      <record_version_num>7.0.0</record_version_num>
+      <record_narrative_name xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" />
+      <collation_value>1074266112</collation_value>
+      <record_parent_id>2101</record_parent_id>
+      <proposed_effective_date>2019-11-01</proposed_effective_date>
+      <priority_order>1000000000</priority_order>
+      <record_content_type_code>1</record_content_type_code>
+      <record_plain_text>Statement of Negotiated Rates 1/2/3/4/5/
+
+Customer Name: 		PSEG Power, LLC 
+
+Service Agreement:		Contract No. 511047 ("Service Agreement")
+
+Term of Negotiated Rate:	The term of this Negotiated Rate Agreement commences on November 1, 2019 and continues through and including October 31, 2034.  
+
+Rate Schedule:	AFT-1
+
+MDTQ:	15,000 Dth / d
+
+Primary Receipt Point(s):	00210 Algonquin - Lambertville, NJ
+
+Primary Delivery Point(s):	00055 Bernards (Somerset, NJ)
+	
+	
+Reservation Rate:	During the term of this Negotiated Rate Agreement, Customer shall pay a Negotiated Reservation Rate per month of Customer's MDTQ under Contract No. 511047 as follows:
+
+		$8.1122 per Dth, per month (11/1/2019 - 10/31/2022)
+
+		$6.5734 per Dth, per month (11/1/2022 - 10/31/2034)
+
+Commodity Rate:	During the term of this Negotiated Rate Agreement, Customer shall pay a commodity rate equal to zero plus the FRQ Deferred Account surcharge (or its successor mechanism, the System Balancing Surcharge) or minus the FRQ Deferred Account credit (or its successor mechanism, the System Balancing Credit). 
+
+Fuel:	During the term of this Negotiated Rate Agreement, Customer shall pay the recourse Fuel Reimbursement Percentage (including Lost and Unaccounted For Gas) applicable to service under Rate Schedule AFT-1 as effective from time to time under Algonquin's Fuel Reimbursement Quantity (FRQ) mechanism.
+Footnotes:
+1/ 	This Negotiated Rate Agreement is part of a conforming Service Agreement.
+
+2/ 	This Negotiated Rate Agreement shall apply only to service under Contract No. 511047 using the primary points designated herein and any secondary points available under rate schedule AFT-1 in accordance with Algonquin's FERC Gas Tariff; provided if Customer changes any of the primary points listed above (or the MDROs or MDDOs associated with such points), pursuant to the provisions of Algonquin's FERC Gas Tariff, Algonquin shall have the option to terminate this Negotiated Rate Agreement by providing Customer with written notice of Algonquin's intent to terminate this Negotiated Rate Agreement and, in such case, this Negotiated Rate Agreement shall terminate effective upon such written notice by Algonquin and thereafter Algonquin's maximum recourse rate(s) for Rate Schedule AFT-1 service shall apply for the remaining term of the Service Agreement, unless and until otherwise agreed in writing between Customer and Algonquin. 
+
+3/ 	During the term of this Negotiated Rate Agreement, Customer agrees to pay the applicable Annual Charge Adjustment (ACA) surcharge.  Customer also agrees to pay any surcharge or other charge pursuant to any FERC approved cost recovery mechanism of general applicability implemented in a generic proceeding or in an Algonquin-specific proceeding, or any other recovery mechanism for the recovery of any direct or indirect costs of any kind not reflected in Algonquin's FERC approved Rate Schedule AFT-1 rates at the time of execution of this Negotiated Rate Agreement, including but not limited to such costs related to pipeline safety or environmental compliance costs associated with Algonquin's operation.
+
+4/	Pipeline and Customer agree that Contract No. 511047 is a ROFR Agreement.
+
+5/	Pipeline and Customer agree that Customer will be eligible to receive reservation charge adjustments under this Negotiated Rate Agreement in accordance with GT&amp;C Section 50 of Algonquin's FERC Gas Tariff.</record_plain_text>
+      <record_change_type>CHANGE</record_change_type>
+      <filing_id>827</filing_id>
+      <filing_title>Negotiated Rate - PSEG contract 511047</filing_title>
+      <filing_type>570</filing_type>
+      <associated_filing_id xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" />
+      <associated_record_id xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" />
+      <associated_option_code xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" />
+      <record_current_status>Effective</record_current_status>
+      <current_effective_date>2019-11-01</current_effective_date>
+      <ferc_order_date>2019-11-20</ferc_order_date>
+      <ferc_action_status>Accept</ferc_action_status>
+      <suspend_motion>Y</suspend_motion>
+    </record_data>
+  </ferc_filing_data>
+</Document>
