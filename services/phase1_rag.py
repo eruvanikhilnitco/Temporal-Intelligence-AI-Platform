@@ -1,6 +1,12 @@
 from services.phase1_pipeline import Phase1Pipeline
 from services.embedding_service import EmbeddingService
-from services.phase1_llm import LLMService  # ✅ NEW
+from services.phase1_llm import LLMService
+
+# 🔥 Phase 2 components
+from services.query_classifier import QueryClassifier
+from services.reranker import Reranker
+from services.multihop import MultiHopRetriever
+from services.cache_service import CacheService  # 🔥 NEW
 
 from core.database import get_qdrant_connection
 
@@ -13,7 +19,13 @@ class Phase1RAG:
     def __init__(self, folder_path: str):
         self.pipeline = Phase1Pipeline(folder_path)
         self.embedder = EmbeddingService()
-        self.llm = LLMService()  # ✅ NEW
+        self.llm = LLMService()
+
+        # 🔥 Phase 2 components
+        self.classifier = QueryClassifier()
+        self.reranker = Reranker()
+        self.multihop = MultiHopRetriever()
+        self.cache = CacheService()  # 🔥 NEW
 
         qdrant_config = get_qdrant_connection()
 
@@ -27,7 +39,7 @@ class Phase1RAG:
         # recreate collection
         self._recreate_collection()
 
-    # ✅ Create collection with correct dimension
+    # ✅ Create collection
     def _recreate_collection(self):
         try:
             self.client.delete_collection(self.collection_name)
@@ -45,7 +57,7 @@ class Phase1RAG:
             )
         )
 
-    # ✅ Ingest pipeline
+    # ✅ Ingest
     def ingest(self):
         chunks = self.pipeline.run()
 
@@ -76,7 +88,7 @@ class Phase1RAG:
         print(f"[INFO] Stored {len(points)} vectors in Qdrant")
 
     # ✅ Retrieval
-    def query(self, question: str, top_k: int = 5):
+    def query(self, question: str, top_k: int = 10):
         query_vector = self.embedder.embed(question)
 
         results = self.client.query_points(
@@ -85,18 +97,35 @@ class Phase1RAG:
             limit=top_k
         )
 
-        contexts = [r.payload["text"] for r in results.points]
+        return [r.payload["text"] for r in results.points]
 
-        return contexts
-
-    # 🔥 NEW: FINAL AI ANSWER FUNCTION
+    # 🔥 FINAL FUNCTION (WITH CACHING)
     def ask(self, question: str):
-        contexts = self.query(question)
+        # ⚡ STEP 0: CACHE CHECK
+        if self.cache.exists(question):
+            print("⚡ Cache Hit")
+            return self.cache.get(question)
 
-        # combine context
+        # 🧠 Step 1: classify
+        query_type = self.classifier.classify(question)
+
+        # 🔥 Step 2: multi-hop + rerank
+        contexts = self.multihop.retrieve(
+            question,
+            self.query,
+            self.reranker
+        )
+
         context_text = "\n\n".join(contexts)
 
-        # generate answer using LLM
+        # optional behavior change
+        if query_type == "summary":
+            question = "Summarize the document"
+
+        # 💡 Step 3: LLM
         answer = self.llm.generate_answer(question, context_text)
+
+        # ⚡ STEP 4: STORE IN CACHE
+        self.cache.set(question, answer)
 
         return answer
