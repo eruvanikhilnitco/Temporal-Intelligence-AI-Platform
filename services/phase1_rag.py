@@ -8,6 +8,9 @@ from services.reranker import Reranker
 from services.multihop import MultiHopRetriever
 from services.cache_service import CacheService
 
+# Phase 3 components
+from services.graph_rag import GraphRAG
+
 from core.database import get_qdrant_connection
 
 from qdrant_client import QdrantClient
@@ -26,6 +29,9 @@ class Phase1RAG:
         self.reranker = Reranker()
         self.multihop = MultiHopRetriever()
         self.cache = CacheService()
+
+        # Phase 3 components
+        self.graph_rag = GraphRAG()
 
         qdrant_config = get_qdrant_connection()
 
@@ -98,6 +104,20 @@ class Phase1RAG:
 
         print(f"[INFO] Stored {len(points)} vectors in Qdrant")
 
+        # Phase 3: extract entities and build graph for each document
+        print("[INFO] Phase 3: building knowledge graph...")
+        doc_texts: dict = {}
+        for item in items:
+            fname = item["file_name"]
+            doc_texts.setdefault(fname, [])
+            doc_texts[fname].append(item["text"])
+
+        for fname, chunks in doc_texts.items():
+            full_text = "\n".join(chunks)
+            self.graph_rag.ingest_document(full_text, fname)
+
+        print(f"[INFO] Phase 3: graph ingestion complete for {len(doc_texts)} document(s)")
+
     # 🔥 QUERY (RBAC)
     def query(self, question: str, user_role: str = "user", top_k: int = 10):
         query_vector = self.embedder.embed(question)
@@ -140,7 +160,11 @@ class Phase1RAG:
         if not contexts:
             return "🚫 No accessible information for your role."
 
-        context_text = "\n\n".join(contexts)
+        # 🔗 Phase 3: hybrid context (vector + graph)
+        context_text, graph_summary = self.graph_rag.retrieve(question, contexts)
+
+        if graph_summary:
+            print(f"[Phase 3] Graph context added ({len(graph_summary)} chars)")
 
         # optional behavior
         if query_type == "summary":

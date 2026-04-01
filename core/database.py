@@ -11,13 +11,13 @@ class Neo4jConnection:
     password: str
 
 
-@dataclass
-class PostgresConnection:
-    host: str
-    port: int
-    database: str
-    user: str
-    password: str
+#@dataclass
+#class PostgresConnection:
+    #host: str
+    #port: int
+    #database: str
+    #user: str
+    #password: str
 
 
 @dataclass
@@ -35,7 +35,7 @@ def get_neo4j_connection() -> Neo4jConnection:
     )
 
 
-def get_postgres_connection() -> PostgresConnection:
+#def get_postgres_connection() -> PostgresConnection:
     settings = get_settings()
     return PostgresConnection(
         host=settings.postgres_host,
@@ -51,7 +51,7 @@ def get_qdrant_connection() -> QdrantConnection:
     return QdrantConnection(host=settings.qdrant_host, port=settings.qdrant_port)
 
 
-_initialized: Optional[bool] = None
+#_initialized: Optional[bool] = None
 
 
 def initialize_datastores() -> None:
