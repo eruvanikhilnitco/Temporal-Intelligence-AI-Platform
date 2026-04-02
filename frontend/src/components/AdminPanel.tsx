@@ -3,7 +3,7 @@ import {
   Shield, Users, AlertTriangle, Server, Database, GitBranch,
   Zap, Plus, Trash2, UserX, UserCheck, Lock,
   Activity, FileText, RefreshCw, Check,
-  BarChart3, HardDrive, Search, Layers
+  BarChart3, HardDrive, Search, Layers, ChevronDown, ChevronRight, FolderOpen, Folder
 } from "lucide-react";
 import axios from "axios";
 
@@ -45,6 +45,129 @@ function SystemCard({ icon: Icon, label, value, status, color, extra }: any) {
       <p className="text-sm font-bold text-white">{value}</p>
       {extra && <p className="text-xs text-gray-500 mt-0.5">{extra}</p>}
       <p className={`text-xs mt-1 font-medium ${txt}`}>{label2}</p>
+    </div>
+  );
+}
+
+// ── Chunks Tab — grouped by document ─────────────────────────────────────────
+function ChunksTab({ chunks, loading, search, setSearch, onSearch, onRefresh }: {
+  chunks: any[]; loading: boolean; search: string;
+  setSearch: (s: string) => void; onSearch: () => void; onRefresh: () => void;
+}) {
+  const [openDocs, setOpenDocs] = useState<Set<string>>(new Set());
+
+  // Group chunks by file_name
+  const grouped: Record<string, any[]> = {};
+  for (const c of chunks) {
+    const key = c.file_name || "Unknown";
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(c);
+  }
+  const docNames = Object.keys(grouped).sort();
+
+  const toggle = (name: string) =>
+    setOpenDocs(prev => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-bold text-white flex items-center gap-2">
+            <Layers size={18} className="text-blue-400" /> Stored Chunks (Qdrant Vector DB)
+          </h3>
+          <p className="text-xs text-gray-400 mt-0.5">Chunks grouped by document — click a folder to expand</p>
+        </div>
+        <button onClick={onRefresh} disabled={loading}
+          className="flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition text-xs disabled:opacity-50">
+          <RefreshCw size={13} className={loading ? "animate-spin text-brand-400" : ""} /> Refresh
+        </button>
+      </div>
+
+      {/* Search */}
+      <div className="flex gap-3">
+        <div className="flex-1 relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && onSearch()}
+            placeholder="Search chunks by keyword…"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500" />
+        </div>
+        <button onClick={onSearch}
+          className="px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition font-medium">
+          Search
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center h-32 gap-3 text-gray-400">
+          <RefreshCw size={18} className="animate-spin text-brand-400" />
+          <span className="text-sm">Loading chunks…</span>
+        </div>
+      ) : chunks.length === 0 ? (
+        <div className="text-center py-16 text-gray-500">
+          <Database size={40} className="mx-auto mb-3 opacity-30" />
+          <p className="text-sm">No chunks found. Upload documents to populate the vector store.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-gray-500">{chunks.length} chunk{chunks.length !== 1 ? "s" : ""} across {docNames.length} document{docNames.length !== 1 ? "s" : ""}</p>
+          {docNames.map(docName => {
+            const isOpen = openDocs.has(docName);
+            const docChunks = grouped[docName];
+            return (
+              <div key={docName} className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden">
+                {/* Folder header */}
+                <button onClick={() => toggle(docName)}
+                  className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-700/50 transition text-left">
+                  {isOpen
+                    ? <FolderOpen size={16} className="text-brand-400 shrink-0" />
+                    : <Folder size={16} className="text-gray-400 shrink-0" />}
+                  <span className="flex-1 text-sm font-medium text-white truncate">{docName}</span>
+                  <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded-full shrink-0">
+                    {docChunks.length} chunk{docChunks.length !== 1 ? "s" : ""}
+                  </span>
+                  {isOpen
+                    ? <ChevronDown size={14} className="text-gray-400 shrink-0" />
+                    : <ChevronRight size={14} className="text-gray-400 shrink-0" />}
+                </button>
+
+                {/* Chunk list */}
+                {isOpen && (
+                  <div className="border-t border-gray-700 divide-y divide-gray-700/50">
+                    {docChunks.map((chunk: any, i: number) => (
+                      <div key={chunk.id || i} className="px-4 py-3.5 hover:bg-gray-700/20 transition">
+                        <div className="flex items-center gap-2 mb-2">
+                          {chunk.collection && (
+                            <span className="text-xs bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full border border-violet-500/20">
+                              {chunk.collection}
+                            </span>
+                          )}
+                          {chunk.access_roles && (
+                            <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                              {Array.isArray(chunk.access_roles) ? chunk.access_roles.join(", ") : chunk.access_roles}
+                            </span>
+                          )}
+                          <span className="ml-auto text-xs text-gray-600">#{i + 1}</span>
+                        </div>
+                        <p className="text-xs text-gray-300 leading-relaxed line-clamp-3 font-mono">
+                          {chunk.text || chunk.content || "(no text)"}
+                        </p>
+                        {chunk.score != null && (
+                          <p className="text-xs text-brand-400 mt-1.5">Relevance: {(chunk.score * 100).toFixed(1)}%</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -268,10 +391,10 @@ export default function AdminPanel({ user }: { user?: any }) {
                 value={health.qdrant?.vectors != null ? `${health.qdrant.vectors} vectors` : "Qdrant"}
                 status={health.qdrant?.status || "warn"} color="text-blue-400"
                 extra={health.qdrant?.error ? health.qdrant.error.slice(0, 40) : undefined} />
-              <SystemCard icon={GitBranch} label="Graph DB (Neo4j)"
-                value={health.neo4j?.nodes != null ? `${health.neo4j.nodes} nodes` : "Neo4j"}
+              <SystemCard icon={GitBranch} label="Graph DB (SQLite)"
+                value={health.neo4j?.nodes != null ? `${health.neo4j.nodes} nodes` : "Graph DB"}
                 status={health.neo4j?.status || "warn"} color="text-green-400"
-                extra={health.neo4j?.error ? health.neo4j.error.slice(0, 40) : undefined} />
+                extra={health.neo4j?.backend ? `Backend: ${health.neo4j.backend}` : health.neo4j?.error?.slice(0, 40)} />
               <SystemCard icon={Zap} label="LLM"
                 value={health.llm?.model || "Cohere"}
                 status={health.llm?.status || "warn"} color="text-yellow-400" />
@@ -681,86 +804,14 @@ export default function AdminPanel({ user }: { user?: any }) {
 
         {/* ── CHUNKS (Qdrant) ── */}
         {tab === "chunks" && (
-          <div className="space-y-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Layers size={18} className="text-blue-400" /> Stored Chunks (Qdrant Vector DB)
-                </h3>
-                <p className="text-xs text-gray-400 mt-0.5">Browse and search document chunks stored in Qdrant</p>
-              </div>
-              <button onClick={() => fetchChunks(chunkSearch)} disabled={chunksLoading}
-                className="flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition text-xs disabled:opacity-50">
-                <RefreshCw size={13} className={chunksLoading ? "animate-spin text-brand-400" : ""} />
-                Refresh
-              </button>
-            </div>
-
-            {/* Search */}
-            <div className="flex gap-3">
-              <div className="flex-1 relative">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-                <input
-                  value={chunkSearch}
-                  onChange={e => setChunkSearch(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && fetchChunks(chunkSearch)}
-                  placeholder="Search chunks by keyword…"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500"
-                />
-              </div>
-              <button onClick={() => fetchChunks(chunkSearch)}
-                className="px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition font-medium">
-                Search
-              </button>
-            </div>
-
-            {/* Chunks list */}
-            {chunksLoading ? (
-              <div className="flex items-center justify-center h-32 gap-3 text-gray-400">
-                <RefreshCw size={18} className="animate-spin text-brand-400" />
-                <span className="text-sm">Loading chunks…</span>
-              </div>
-            ) : chunks.length === 0 ? (
-              <div className="text-center py-16 text-gray-500">
-                <Database size={40} className="mx-auto mb-3 opacity-30" />
-                <p className="text-sm">No chunks found. Upload documents to populate the vector store.</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-xs text-gray-500">{chunks.length} chunk{chunks.length !== 1 ? "s" : ""} found</p>
-                {chunks.map((chunk: any, i: number) => (
-                  <div key={chunk.id || i} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-                    <div className="flex items-start justify-between gap-3 mb-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {chunk.file_name && (
-                          <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-500/20">
-                            <FileText size={10} className="inline mr-1" />{chunk.file_name}
-                          </span>
-                        )}
-                        {chunk.collection && (
-                          <span className="text-xs bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full border border-violet-500/20">
-                            {chunk.collection}
-                          </span>
-                        )}
-                        {chunk.access_roles && (
-                          <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                            {Array.isArray(chunk.access_roles) ? chunk.access_roles.join(", ") : chunk.access_roles}
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-xs text-gray-600 shrink-0">#{i + 1}</span>
-                    </div>
-                    <p className="text-sm text-gray-300 leading-relaxed line-clamp-4">
-                      {chunk.text || chunk.content || "(no text)"}
-                    </p>
-                    {chunk.score != null && (
-                      <p className="text-xs text-brand-400 mt-2">Relevance: {(chunk.score * 100).toFixed(1)}%</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <ChunksTab
+            chunks={chunks}
+            loading={chunksLoading}
+            search={chunkSearch}
+            setSearch={setChunkSearch}
+            onSearch={() => fetchChunks(chunkSearch)}
+            onRefresh={() => fetchChunks(chunkSearch)}
+          />
         )}
 
         {/* ── STORAGE INFO ── */}

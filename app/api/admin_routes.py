@@ -302,59 +302,11 @@ def get_graph_data(
     limit: int = Query(200, ge=10, le=1000),
     current_user: dict = Depends(require_admin),
 ):
-    """
-    Return graph nodes and edges from Neo4j for visualization.
-    Falls back to empty graph if Neo4j is unavailable.
-    """
+    """Return graph nodes and edges from SQLite for visualization."""
     try:
         from services.graph_service import GraphService
         gs = GraphService()
-        if not gs.driver:
-            return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0}
-
-        cypher = f"""
-        MATCH (a:Entity)-[r]->(b:Entity)
-        RETURN a.name AS from_node, a.type AS from_type,
-               type(r) AS relation, b.name AS to_node, b.type AS to_type,
-               r.source AS source
-        LIMIT {limit}
-        """
-
-        nodes_dict = {}
-        edges = []
-
-        with gs.driver.session() as session:
-            records = session.run(cypher)
-            for rec in records:
-                fn = rec["from_node"]
-                tn = rec["to_node"]
-                if fn and fn not in nodes_dict:
-                    nodes_dict[fn] = {
-                        "id": fn, "name": fn,
-                        "type": rec["from_type"] or "Entity",
-                        "source": rec["source"],
-                    }
-                if tn and tn not in nodes_dict:
-                    nodes_dict[tn] = {
-                        "id": tn, "name": tn,
-                        "type": rec["to_type"] or "Entity",
-                        "source": rec["source"],
-                    }
-                if fn and tn:
-                    edges.append({
-                        "from_node": fn,
-                        "relation": rec["relation"],
-                        "to_node": tn,
-                        "source": rec["source"],
-                    })
-
-        gs.close()
-        return {
-            "nodes": list(nodes_dict.values()),
-            "edges": edges,
-            "total_nodes": len(nodes_dict),
-            "total_edges": len(edges),
-        }
+        return gs.get_all_data(limit=limit)
     except Exception as e:
         logger.warning(f"Graph data fetch failed: {e}")
         return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0}
@@ -514,18 +466,16 @@ def system_health(current_user: dict = Depends(require_admin)):
     except Exception as e:
         statuses["qdrant"] = {"status": "offline", "error": str(e)[:80]}
 
-    # Neo4j
+    # Graph DB (SQLite-backed — always online)
     try:
         from services.graph_service import GraphService
         gs = GraphService()
-        if gs.driver:
-            with gs.driver.session() as s:
-                r = s.run("MATCH (n) RETURN count(n) AS cnt")
-                cnt = r.single()["cnt"]
-            gs.close()
-            statuses["neo4j"] = {"status": "online", "nodes": cnt}
-        else:
-            statuses["neo4j"] = {"status": "offline"}
+        data = gs.get_all_data(limit=1)
+        import sqlite3
+        from pathlib import Path
+        with sqlite3.connect(str(Path("cortexflow.db"))) as c:
+            cnt = c.execute("SELECT COUNT(*) FROM graph_nodes").fetchone()[0]
+        statuses["neo4j"] = {"status": "online", "nodes": cnt, "backend": "SQLite"}
     except Exception as e:
         statuses["neo4j"] = {"status": "offline", "error": str(e)[:80]}
 
