@@ -289,13 +289,37 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
   const loadHistory = useCallback(async () => {
     try {
       const token = localStorage.getItem("accessToken");
-      const res = await axios.get("/chat/history?limit=20", {
+      const res = await axios.get("/chat/history?limit=30", {
         headers: { Authorization: `Bearer ${token}` },
       });
       setHistory(res.data);
     } catch {
       setHistory([]);
     }
+  }, []);
+
+  const restoreHistoryItem = useCallback((item: any) => {
+    // Restore the Q&A pair as actual messages in the chat
+    const userMsg: Message = {
+      id: `hist-u-${item.id}`,
+      role: "user",
+      content: item.question,
+      timestamp: item.created_at ? new Date(item.created_at) : new Date(),
+    };
+    const aiMsg: Message = {
+      id: `hist-a-${item.id}`,
+      role: "assistant",
+      content: item.answer,
+      timestamp: item.created_at ? new Date(item.created_at) : new Date(),
+      graphUsed: item.graph_used,
+      confidence: item.confidence ? Math.round(item.confidence) : undefined,
+      queryType: item.query_type,
+      sources: [],
+      chatLogId: item.id,
+      feedback: item.feedback || null,
+    };
+    setMessages(prev => [...prev, userMsg, aiMsg]);
+    setShowHistory(false);
   }, []);
 
   // Simulate streaming from server response
@@ -419,19 +443,26 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
 
       {/* ── History panel ── */}
       {showHistory && (
-        <div className="bg-gray-900 border-b border-gray-800 px-6 py-3 max-h-48 overflow-y-auto shrink-0">
-          <p className="text-xs font-medium text-gray-400 mb-2">Recent history</p>
+        <div className="bg-gray-900 border-b border-gray-800 px-6 py-3 max-h-64 overflow-y-auto shrink-0">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-medium text-gray-400">Chat History — click to restore</p>
+            <button onClick={() => setShowHistory(false)} className="text-xs text-gray-600 hover:text-gray-400">Close</button>
+          </div>
           {history.length === 0 ? (
-            <p className="text-xs text-gray-500">No history yet.</p>
+            <p className="text-xs text-gray-500">No history yet. Start chatting to build history.</p>
           ) : (
             <div className="space-y-1.5">
-              {history.slice(0, 10).map(h => (
+              {history.slice(0, 20).map(h => (
                 <button
                   key={h.id}
-                  onClick={() => { handleSend(h.question); setShowHistory(false); }}
-                  className="w-full text-left text-xs text-gray-400 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 rounded-lg px-3 py-2 transition truncate"
+                  onClick={() => restoreHistoryItem(h)}
+                  className="w-full text-left bg-gray-800 hover:bg-gray-700 rounded-lg px-3 py-2.5 transition group"
                 >
-                  {h.question}
+                  <p className="text-xs text-gray-200 truncate">{h.question}</p>
+                  <p className="text-xs text-gray-500 truncate mt-0.5 group-hover:text-gray-400">{h.answer?.slice(0, 80)}…</p>
+                  {h.confidence > 0 && (
+                    <p className="text-xs text-brand-400 mt-0.5">{Math.round(h.confidence)}% confidence</p>
+                  )}
                 </button>
               ))}
             </div>

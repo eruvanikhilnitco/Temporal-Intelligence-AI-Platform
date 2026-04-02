@@ -1,7 +1,8 @@
 import { useState, useCallback } from "react";
 import {
   Upload, FileText, CheckCircle, AlertCircle, Loader2, X,
-  GitBranch, Brain, Database, ChevronDown, ChevronUp, Link2, HardDrive, Cloud
+  GitBranch, Brain, Database, ChevronDown, ChevronUp, Link2,
+  Cloud, FolderOpen, Play, RefreshCw
 } from "lucide-react";
 import axios from "axios";
 
@@ -26,25 +27,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// ── Knowledge graph pipeline display ─────────────────────────────────────────
 function KnowledgeGraphPipeline({ entities }: { entities: UploadedFile["entities"] }) {
   const [open, setOpen] = useState(false);
   if (!entities) return null;
-
   const hasAny = Object.values(entities).some(a => a.length > 0);
   return (
     <div className="mt-3 border-t border-gray-700 pt-3">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-200 transition"
-      >
+      <button onClick={() => setOpen(!open)} className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-200 transition">
         <GitBranch size={12} className="text-emerald-400" />
         Knowledge Graph Pipeline
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
       </button>
       {open && (
         <div className="mt-2 space-y-2">
-          {/* Pipeline steps */}
           <div className="flex items-center gap-2 text-xs text-gray-400 flex-wrap">
             {["NER Extraction", "Relationship Mapping", "Graph Storage (Neo4j)", "Chunk Linking"].map((step, i) => (
               <span key={step} className="flex items-center gap-1">
@@ -53,8 +48,6 @@ function KnowledgeGraphPipeline({ entities }: { entities: UploadedFile["entities
               </span>
             ))}
           </div>
-
-          {/* Extracted entities */}
           {hasAny ? (
             <div className="grid grid-cols-2 gap-2 mt-2">
               {Object.entries(entities).map(([key, vals]) =>
@@ -78,7 +71,6 @@ function KnowledgeGraphPipeline({ entities }: { entities: UploadedFile["entities
   );
 }
 
-// ── File card ─────────────────────────────────────────────────────────────────
 function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void }) {
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
@@ -106,9 +98,7 @@ function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void
             </div>
           )}
           {file.message && file.status !== "uploading" && (
-            <p className={`text-xs mt-1 ${file.status === "success" ? "text-emerald-400" : "text-red-400"}`}>
-              {file.message}
-            </p>
+            <p className={`text-xs mt-1 ${file.status === "success" ? "text-emerald-400" : "text-red-400"}`}>{file.message}</p>
           )}
           {file.status === "success" && <KnowledgeGraphPipeline entities={file.entities} />}
         </div>
@@ -117,18 +107,180 @@ function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void
   );
 }
 
-// ── External source card ──────────────────────────────────────────────────────
-function ExternalCard({ icon: Icon, label, desc, badge }: any) {
+// ── SharePoint Connector ───────────────────────────────────────────────────────
+function SharePointConnector() {
+  const [form, setForm] = useState({ site_url: "", username: "", password: "", library_path: "Shared Documents" });
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState("");
+  const [log, setLog] = useState<string[]>([]);
+
+  const field = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(p => ({ ...p, [k]: e.target.value }));
+
+  async function connect() {
+    if (!form.site_url || !form.username || !form.password) {
+      setError("Site URL, username and password are required.");
+      return;
+    }
+    setError("");
+    setResult(null);
+    setLog([]);
+    setRunning(true);
+    setLog(["Connecting to SharePoint…"]);
+
+    try {
+      const token = localStorage.getItem("accessToken");
+      setLog(prev => [...prev, `Authenticating as ${form.username}…`]);
+      setLog(prev => [...prev, `Traversing library: ${form.library_path} (recursive)…`]);
+
+      const res = await axios.post("/admin/sharepoint/ingest", form, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      setLog(prev => [...prev, `Ingestion complete.`]);
+      setResult(res.data);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || "Connection failed. Check credentials and site URL.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 flex items-center gap-3 opacity-70">
-      <div className="w-9 h-9 bg-gray-700 rounded-lg flex items-center justify-center shrink-0">
-        <Icon size={16} className="text-gray-400" />
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-bold text-white">SharePoint Connector</h2>
+        <p className="text-sm text-gray-400 mt-1">
+          Connect to your SharePoint site and recursively ingest all documents from a library — including nested folders at any depth.
+        </p>
       </div>
-      <div className="flex-1">
-        <p className="text-sm font-medium text-white">{label}</p>
-        <p className="text-xs text-gray-400">{desc}</p>
+
+      {/* Connection form */}
+      <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2 mb-1">
+          <Cloud size={16} className="text-brand-400" />
+          <p className="text-sm font-semibold text-white">SharePoint Connection</p>
+        </div>
+
+        <div className="grid gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1">SharePoint Site URL</label>
+            <input value={form.site_url} onChange={field("site_url")}
+              placeholder="https://yourcompany.sharepoint.com/sites/YourSite"
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Username / Email</label>
+              <input value={form.username} onChange={field("username")}
+                placeholder="user@company.com"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Password</label>
+              <input type="password" value={form.password} onChange={field("password")}
+                placeholder="••••••••"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-1">Document Library Path</label>
+            <input value={form.library_path} onChange={field("library_path")}
+              placeholder="Shared Documents"
+              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
+            <p className="text-xs text-gray-500 mt-1">e.g. "Shared Documents" or "Shared Documents/Contracts/2024"</p>
+          </div>
+        </div>
+
+        {error && (
+          <div className="flex gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
+            <AlertCircle size={15} className="shrink-0 mt-0.5" /> {error}
+          </div>
+        )}
+
+        <button onClick={connect} disabled={running}
+          className="w-full flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg transition text-sm">
+          {running ? <><Loader2 size={15} className="animate-spin" /> Ingesting…</> : <><Play size={15} /> Connect & Ingest All Files</>}
+        </button>
       </div>
-      <span className="text-xs bg-gray-700 text-gray-400 px-2 py-0.5 rounded-full">{badge}</span>
+
+      {/* Live log */}
+      {log.length > 0 && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
+          <p className="text-xs font-medium text-gray-400 mb-2 flex items-center gap-1.5">
+            <RefreshCw size={11} className={running ? "animate-spin text-brand-400" : "text-gray-500"} /> Ingestion Log
+          </p>
+          <div className="space-y-1">
+            {log.map((l, i) => (
+              <p key={i} className="text-xs text-gray-300 font-mono">› {l}</p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Result */}
+      {result && (
+        <div className={`border rounded-xl p-5 ${result.errors === 0 ? "bg-emerald-500/5 border-emerald-500/20" : "bg-yellow-500/5 border-yellow-500/20"}`}>
+          <div className="flex items-center gap-2 mb-3">
+            {result.errors === 0
+              ? <CheckCircle size={16} className="text-emerald-400" />
+              : <AlertCircle size={16} className="text-yellow-400" />}
+            <p className="text-sm font-semibold text-white">Ingestion Complete</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mb-3 text-sm">
+            <div className="bg-gray-800 rounded-lg px-3 py-2 text-center">
+              <p className="text-2xl font-bold text-emerald-400">{result.ingested}</p>
+              <p className="text-xs text-gray-400">Files Ingested</p>
+            </div>
+            <div className="bg-gray-800 rounded-lg px-3 py-2 text-center">
+              <p className="text-2xl font-bold text-red-400">{result.errors}</p>
+              <p className="text-xs text-gray-400">Errors</p>
+            </div>
+          </div>
+          {result.files?.length > 0 && (
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              {result.files.map((f: any, i: number) => (
+                <div key={i} className="flex items-center gap-2 text-xs text-gray-300">
+                  <CheckCircle size={10} className="text-emerald-400 shrink-0" />
+                  <span className="truncate">{f.file}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {result.error_details?.length > 0 && (
+            <div className="mt-3 space-y-1">
+              <p className="text-xs font-medium text-red-400">Errors:</p>
+              {result.error_details.map((e: any, i: number) => (
+                <div key={i} className="text-xs text-gray-400">
+                  <span className="text-red-400">✗</span> {e.file}: {e.error}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Recursive traversal info */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+        <p className="text-xs font-medium text-gray-300 mb-3 flex items-center gap-1.5">
+          <FolderOpen size={13} className="text-brand-400" /> Recursive Traversal — How It Works
+        </p>
+        <div className="space-y-1.5 text-xs text-gray-400">
+          {[
+            "Authenticates with SharePoint using your credentials",
+            "Lists all files in the root library folder",
+            "Recursively traverses every subfolder at any depth",
+            "Downloads each file and runs it through the ingestion pipeline",
+            "Embeds chunks into Qdrant vector store",
+            "Extracts entities and builds knowledge graph in Neo4j",
+          ].map((s, i) => (
+            <div key={i} className="flex items-start gap-2">
+              <span className="text-brand-400 font-bold shrink-0">{i + 1}.</span> {s}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -136,7 +288,7 @@ function ExternalCard({ icon: Icon, label, desc, badge }: any) {
 export default function DocumentUpload() {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [activeTab, setActiveTab] = useState<"files" | "external" | "etl">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "sharepoint" | "etl">("files");
 
   const processFile = useCallback(async (file: File) => {
     const entry: UploadedFile = { name: file.name, size: file.size, status: "uploading" };
@@ -187,24 +339,20 @@ export default function DocumentUpload() {
       <div className="flex gap-1 border-b border-gray-800 px-6 pt-1 shrink-0">
         {[
           { id: "files", label: "Local Files" },
-          { id: "external", label: "External Sources" },
+          { id: "sharepoint", label: "SharePoint" },
           { id: "etl", label: "ETL Pipeline" },
         ].map(({ id, label }) => (
-          <button
-            key={id}
-            onClick={() => setActiveTab(id as any)}
+          <button key={id} onClick={() => setActiveTab(id as any)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 transition -mb-px ${
-              activeTab === id
-                ? "border-brand-500 text-brand-300"
-                : "border-transparent text-gray-400 hover:text-white"
-            }`}
-          >
+              activeTab === id ? "border-brand-500 text-brand-300" : "border-transparent text-gray-400 hover:text-white"
+            }`}>
             {label}
           </button>
         ))}
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
         {/* ── LOCAL FILES ── */}
         {activeTab === "files" && (
           <>
@@ -215,7 +363,6 @@ export default function DocumentUpload() {
               </p>
             </div>
 
-            {/* Drop zone */}
             <div
               onDragOver={e => { e.preventDefault(); setDragging(true); }}
               onDragLeave={() => setDragging(false)}
@@ -226,26 +373,17 @@ export default function DocumentUpload() {
               }`}
             >
               <Upload size={40} className={`mx-auto mb-4 transition ${dragging ? "text-brand-400" : "text-gray-500"}`} />
-              <p className="text-base font-medium text-white mb-1">
-                {dragging ? "Release to upload" : "Drag & drop your documents"}
-              </p>
+              <p className="text-base font-medium text-white mb-1">{dragging ? "Release to upload" : "Drag & drop your documents"}</p>
               <p className="text-sm text-gray-400 mb-3">or click to browse</p>
               <div className="flex flex-wrap justify-center gap-2">
                 {ALLOWED.map(ext => (
                   <span key={ext} className="text-xs bg-gray-800 border border-gray-700 text-gray-400 px-2 py-0.5 rounded-full">{ext}</span>
                 ))}
               </div>
-              <input
-                id="file-input"
-                type="file"
-                className="hidden"
-                multiple
-                accept={ALLOWED.join(",")}
-                onChange={e => handleFiles(e.target.files)}
-              />
+              <input id="file-input" type="file" className="hidden" multiple accept={ALLOWED.join(",")}
+                onChange={e => handleFiles(e.target.files)} />
             </div>
 
-            {/* Processing pipeline info */}
             <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
               <p className="text-xs font-medium text-gray-300 mb-3">Document Processing Pipeline</p>
               <div className="flex items-center gap-2 flex-wrap">
@@ -267,7 +405,6 @@ export default function DocumentUpload() {
               </div>
             </div>
 
-            {/* Files list */}
             {files.length > 0 && (
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
@@ -282,25 +419,8 @@ export default function DocumentUpload() {
           </>
         )}
 
-        {/* ── EXTERNAL SOURCES ── */}
-        {activeTab === "external" && (
-          <>
-            <div>
-              <h2 className="text-lg font-bold text-white">External Sources</h2>
-              <p className="text-sm text-gray-400 mt-1">Connect to external document repositories for automatic ingestion.</p>
-            </div>
-            <div className="space-y-3">
-              <ExternalCard icon={Cloud} label="SharePoint" desc="Connect your SharePoint libraries" badge="Coming Soon" />
-              <ExternalCard icon={HardDrive} label="Google Drive" desc="Import from Drive folders" badge="Coming Soon" />
-              <ExternalCard icon={Cloud} label="Amazon S3" desc="Ingest from S3 buckets" badge="Coming Soon" />
-              <ExternalCard icon={Link2} label="REST API" desc="Pull documents from custom APIs" badge="Coming Soon" />
-            </div>
-            <div className="bg-brand-600/10 border border-brand-500/30 rounded-xl p-5 text-sm text-brand-300">
-              <p className="font-medium mb-1">Phase 2 Upload Coming Soon</p>
-              <p className="text-xs text-gray-400">External source connectors will automatically ingest documents into the RAG + Graph pipeline with authentication support.</p>
-            </div>
-          </>
-        )}
+        {/* ── SHAREPOINT ── */}
+        {activeTab === "sharepoint" && <SharePointConnector />}
 
         {/* ── ETL PIPELINE ── */}
         {activeTab === "etl" && (
@@ -316,20 +436,14 @@ export default function DocumentUpload() {
                 { step: "3", icon: Link2, title: "Relationship Extraction", desc: "Regex + ML patterns detect relationships: CONTRACT→issued_by→ORG, CONTRACT→starts_on→DATE.", status: "active" },
                 { step: "4", icon: GitBranch, title: "Automatic Graph Generation", desc: "Extracted entities and relationships are stored as Neo4j nodes and edges automatically.", status: "active" },
                 { step: "5", icon: Database, title: "Chunk-to-Node Linking", desc: "Each vector chunk is linked to relevant graph nodes for unified retrieval.", status: "active" },
-                { step: "6", icon: Cloud, title: "Table Extraction", desc: "Structured table data extracted and indexed as structured knowledge.", status: "soon" },
-                { step: "7", icon: HardDrive, title: "Metadata Tagging", desc: "Automatic document classification and metadata tagging for improved retrieval.", status: "soon" },
               ].map(({ step, icon: Icon, title, desc, status }) => (
                 <div key={step} className="flex gap-4">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                    status === "active" ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/30" : "bg-gray-700 text-gray-500 border border-gray-600"
-                  }`}>{step}</div>
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 bg-emerald-600/20 text-emerald-300 border border-emerald-500/30">{step}</div>
                   <div className="flex-1 pb-4 border-b border-gray-800">
                     <div className="flex items-center gap-2 mb-1">
-                      <Icon size={15} className={status === "active" ? "text-emerald-400" : "text-gray-500"} />
+                      <Icon size={15} className="text-emerald-400" />
                       <p className="text-sm font-medium text-white">{title}</p>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        status === "active" ? "bg-emerald-500/20 text-emerald-300" : "bg-gray-700 text-gray-400"
-                      }`}>{status === "active" ? "Active" : "Coming Soon"}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">Active</span>
                     </div>
                     <p className="text-xs text-gray-400 leading-relaxed">{desc}</p>
                   </div>

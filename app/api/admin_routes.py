@@ -1,11 +1,15 @@
 """
-Admin API Routes — Rules CRUD, Security Events, Analytics, Graph, User Risk.
+Admin API Routes — Rules CRUD, Security Events, Analytics, Graph, User Risk, SharePoint.
 All endpoints require admin role.
 """
 
 import logging
+import os
+import tempfile
+import requests as http_requests
 from datetime import datetime, timedelta
 from typing import Optional, List
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -389,6 +393,103 @@ def get_entity_relations(
     except Exception as e:
         logger.warning(f"Entity query failed: {e}")
         return {"entity": entity_name, "relations": [], "count": 0}
+
+
+# ── SharePoint Ingestion ──────────────────────────────────────────────────────
+
+class SharePointRequest(BaseModel):
+    site_url: str
+    username: str
+    password: str
+    library_path: str = "Shared Documents"
+
+
+@router.post("/sharepoint/ingest")
+def sharepoint_ingest(
+    req: SharePointRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Connect to SharePoint, recursively traverse all nested folders,
+    download every file, and ingest each through the RAG pipeline.
+    Returns a summary of ingested files and any errors.
+    """
+    from app.services.rag_service import ingest_file
+
+    site = req.site_url.rstrip("/")
+    auth = (req.username, req.password)
+    headers = {"Accept": "application/json;odata=verbose"}
+
+    ingested = []
+    errors = []
+
+    def get_folder_files(folder_url: str):
+        """Recursively get all files in a folder and its subfolders."""
+        # Get files in current folder
+        files_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Files"
+        try:
+            res = http_requests.get(files_url, auth=auth, headers=headers, timeout=30)
+            if res.ok:
+                for item in res.json().get("d", {}).get("results", []):
+                    file_url = item.get("ServerRelativeUrl", "")
+                    file_name = item.get("Name", "")
+                    if file_url:
+                        yield file_url, file_name
+        except Exception as e:
+            logger.warning(f"[SharePoint] Failed to list files in {folder_url}: {e}")
+
+        # Recurse into subfolders
+        folders_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Folders"
+        try:
+            res = http_requests.get(folders_url, auth=auth, headers=headers, timeout=30)
+            if res.ok:
+                for subfolder in res.json().get("d", {}).get("results", []):
+                    sub_url = subfolder.get("ServerRelativeUrl", "")
+                    sub_name = subfolder.get("Name", "")
+                    if sub_url and sub_name not in ("Forms",):
+                        yield from get_folder_files(sub_url)
+        except Exception as e:
+            logger.warning(f"[SharePoint] Failed to list folders in {folder_url}: {e}")
+
+    # Build initial folder server-relative URL
+    try:
+        site_path = site.split("/sites/")[-1] if "/sites/" in site else ""
+        base_folder = f"/sites/{site_path}/{req.library_path}" if site_path else f"/{req.library_path}"
+    except Exception:
+        base_folder = f"/{req.library_path}"
+
+    for file_rel_url, file_name in get_folder_files(base_folder):
+        download_url = f"{site}/_api/web/GetFileByServerRelativeUrl('{file_rel_url}')/$value"
+        try:
+            dl = http_requests.get(download_url, auth=auth, timeout=60)
+            if not dl.ok:
+                errors.append({"file": file_name, "error": f"Download failed: HTTP {dl.status_code}"})
+                continue
+
+            suffix = os.path.splitext(file_name)[1] or ".bin"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(dl.content)
+                tmp_path = tmp.name
+
+            try:
+                entities = ingest_file(tmp_path)
+                ingested.append({"file": file_name, "entities": entities})
+                logger.info(f"[SharePoint] Ingested: {file_name}")
+            except Exception as e:
+                errors.append({"file": file_name, "error": str(e)})
+            finally:
+                os.unlink(tmp_path)
+
+        except Exception as e:
+            errors.append({"file": file_name, "error": str(e)})
+
+    return {
+        "status": "complete",
+        "ingested": len(ingested),
+        "errors": len(errors),
+        "files": ingested,
+        "error_details": errors,
+    }
 
 
 # ── System health ─────────────────────────────────────────────────────────────
