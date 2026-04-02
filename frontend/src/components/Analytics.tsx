@@ -73,12 +73,12 @@ export default function AnalyticsDashboard() {
   const cacheData = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, data?.cache_hit_rate ?? 0];
 
   const kpi = [
-    { label: "Total Queries", value: data ? data.total_queries.toLocaleString() : "0", icon: BarChart3 },
-    { label: "Avg Latency", value: data ? `${data.avg_latency_ms.toFixed(0)}ms` : "—", icon: Zap },
-    { label: "Cache Hit Rate", value: data ? `${data.cache_hit_rate.toFixed(1)}%` : "—", icon: Database },
-    { label: "Graph Usage", value: data ? `${data.graph_usage_rate.toFixed(1)}%` : "—", icon: GitBranch },
-    { label: "Avg Confidence", value: data ? `${data.avg_confidence.toFixed(1)}%` : "—", icon: TrendingUp },
-    { label: "Total Users", value: data ? data.total_users.toString() : "0", icon: Users },
+    { label: "Total Queries", value: (data?.total_queries ?? 0).toLocaleString(), icon: BarChart3 },
+    { label: "Avg Latency", value: data?.avg_latency_ms != null ? `${Number(data.avg_latency_ms).toFixed(0)}ms` : "—", icon: Zap },
+    { label: "Cache Hit Rate", value: data?.cache_hit_rate != null ? `${Number(data.cache_hit_rate).toFixed(1)}%` : "—", icon: Database },
+    { label: "Graph Usage", value: data?.graph_usage_rate != null ? `${Number(data.graph_usage_rate).toFixed(1)}%` : "—", icon: GitBranch },
+    { label: "Avg Confidence", value: data?.avg_confidence != null ? `${Number(data.avg_confidence).toFixed(1)}%` : "—", icon: TrendingUp },
+    { label: "Total Users", value: String(data?.total_users ?? 0), icon: Users },
   ];
 
   const retrieval = data?.retrieval_quality ?? [

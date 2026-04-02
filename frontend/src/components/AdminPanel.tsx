@@ -119,7 +119,7 @@ export default function AdminPanel({ user }: { user?: any }) {
     setUsersLoading(true);
     try {
       const res = await axios.get("/auth/users", { headers: authHeaders() });
-      setUsers(res.data);
+      setUsers(Array.isArray(res.data) ? res.data : []);
     } catch { setUsers([]); }
     finally { setUsersLoading(false); }
   }, []);
@@ -147,8 +147,8 @@ export default function AdminPanel({ user }: { user?: any }) {
         axios.get("/admin/security/events?limit=50", { headers: authHeaders() }),
         axios.get("/admin/security/stats", { headers: authHeaders() }),
       ]);
-      setSecEvents(evRes.data);
-      setSecStats(statsRes.data);
+      setSecEvents(Array.isArray(evRes.data) ? evRes.data : []);
+      setSecStats(statsRes.data && typeof statsRes.data === "object" ? statsRes.data : null);
     } catch { setSecEvents([]); }
     finally { setSecLoading(false); }
   }, []);

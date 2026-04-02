@@ -35,6 +35,26 @@ def startup():
         import logging
         logging.getLogger(__name__).error(f"[Startup] DB init failed: {e}")
     _seed_default_rules()
+    _warmup_rag_background()
+
+
+def _warmup_rag_background():
+    """Pre-load the embedding model in a background thread so first requests don't time out."""
+    import threading
+    import logging
+    logger = logging.getLogger(__name__)
+
+    def warmup():
+        try:
+            logger.info("[Warmup] Pre-loading RAG service in background…")
+            from app.services.rag_service import _get_rag
+            _get_rag()
+            logger.info("[Warmup] RAG service ready.")
+        except Exception as e:
+            logger.warning(f"[Warmup] RAG warmup failed (non-fatal): {e}")
+
+    t = threading.Thread(target=warmup, daemon=True)
+    t.start()
 
 
 def _seed_default_rules():

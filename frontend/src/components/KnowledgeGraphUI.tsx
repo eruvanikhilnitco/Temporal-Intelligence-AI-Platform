@@ -250,15 +250,15 @@ export default function KnowledgeGraphUI() {
 
   const W = 900, H = 560;
 
-  // Filter nodes by type
-  const filteredNodes = graphData?.nodes.filter(n =>
+  // Filter nodes by type — use full optional chain to avoid crash when graphData is null
+  const filteredNodes = (graphData?.nodes ?? []).filter(n =>
     filterType === "All" || n.type === filterType
-  ) || [];
+  );
 
-  const filteredEdges = graphData?.edges.filter(e =>
+  const filteredEdges = (graphData?.edges ?? []).filter(e =>
     filteredNodes.some(n => n.id === e.from_node) &&
     filteredNodes.some(n => n.id === e.to_node)
-  ) || [];
+  );
 
   const positioned = useForceLayout(filteredNodes, filteredEdges, W, H, 100);
 
@@ -312,7 +312,7 @@ export default function KnowledgeGraphUI() {
 
   useEffect(() => { fetchGraph(); }, [fetchGraph]);
 
-  const nodeTypes = ["All", ...Array.from(new Set(graphData?.nodes.map(n => n.type) || []))];
+  const nodeTypes = ["All", ...Array.from(new Set((graphData?.nodes ?? []).map(n => n.type)))];
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
