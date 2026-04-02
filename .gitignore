@@ -1,2 +1,18 @@
 .env
 .env.example.deleted
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime data
+cortexflow.db
+uploaded_docs/
+
+# Frontend build output
+frontend/dist/
+frontend/node_modules/
+
+# OS
+.DS_Store
