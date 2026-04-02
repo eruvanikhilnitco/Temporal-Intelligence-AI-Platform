@@ -3,11 +3,11 @@ import {
   Shield, Users, AlertTriangle, Server, Database, GitBranch,
   Zap, Plus, Trash2, UserX, UserCheck, Lock,
   Activity, FileText, RefreshCw, Check,
-  BarChart3
+  BarChart3, HardDrive, Search, Layers
 } from "lucide-react";
 import axios from "axios";
 
-type Tab = "overview" | "users" | "security" | "rules" | "monitoring";
+type Tab = "overview" | "users" | "security" | "rules" | "monitoring" | "chunks" | "storage";
 
 interface Rule { id: string; name: string; pattern: string; action: string; role: string; active: boolean; created_at?: string }
 interface SecurityEvent { id: string; user_email?: string; event_type: string; severity: string; description: string; query?: string; resolved: boolean; created_at: string }
@@ -57,6 +57,8 @@ function TabBar({ active, setActive }: { active: Tab; setActive: (t: Tab) => voi
     { id: "security", label: "Security", icon: Shield },
     { id: "rules", label: "Rule Engine", icon: Lock },
     { id: "monitoring", label: "Monitoring", icon: Activity },
+    { id: "chunks", label: "Chunks (Qdrant)", icon: Layers },
+    { id: "storage", label: "Storage Info", icon: HardDrive },
   ];
   return (
     <div className="flex gap-1 border-b border-gray-800 px-6 pt-1 shrink-0 overflow-x-auto">
@@ -99,6 +101,15 @@ export default function AdminPanel({ user }: { user?: any }) {
   // Analytics
   const [analytics, setAnalytics] = useState<any>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // Chunks
+  const [chunks, setChunks] = useState<any[]>([]);
+  const [chunksLoading, setChunksLoading] = useState(false);
+  const [chunkSearch, setChunkSearch] = useState("");
+
+  // Storage
+  const [storageInfo, setStorageInfo] = useState<any>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
 
   const token = () => localStorage.getItem("accessToken");
   const authHeaders = () => ({ Authorization: `Bearer ${token()}` });
@@ -160,12 +171,33 @@ export default function AdminPanel({ user }: { user?: any }) {
     finally { setAnalyticsLoading(false); }
   }, []);
 
+  const fetchChunks = useCallback(async (search = "") => {
+    setChunksLoading(true);
+    try {
+      const url = search ? `/admin/chunks?search=${encodeURIComponent(search)}` : "/admin/chunks";
+      const res = await axios.get(url, { headers: authHeaders() });
+      setChunks(res.data.chunks || []);
+    } catch { setChunks([]); }
+    finally { setChunksLoading(false); }
+  }, []);
+
+  const fetchStorage = useCallback(async () => {
+    setStorageLoading(true);
+    try {
+      const res = await axios.get("/admin/storage/info", { headers: authHeaders() });
+      setStorageInfo(res.data);
+    } catch { setStorageInfo(null); }
+    finally { setStorageLoading(false); }
+  }, []);
+
   useEffect(() => {
     if (tab === "overview") { fetchHealth(); fetchSecEvents(); fetchAnalytics(); }
     if (tab === "users") fetchUsers();
     if (tab === "rules") fetchRules();
     if (tab === "security") fetchSecEvents();
     if (tab === "monitoring") fetchAnalytics();
+    if (tab === "chunks") fetchChunks();
+    if (tab === "storage") fetchStorage();
   }, [tab]);
 
   // ── Actions ──────────────────────────────────────────────────────────────────
@@ -644,6 +676,200 @@ export default function AdminPanel({ user }: { user?: any }) {
                 ))}
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── CHUNKS (Qdrant) ── */}
+        {tab === "chunks" && (
+          <div className="space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Layers size={18} className="text-blue-400" /> Stored Chunks (Qdrant Vector DB)
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">Browse and search document chunks stored in Qdrant</p>
+              </div>
+              <button onClick={() => fetchChunks(chunkSearch)} disabled={chunksLoading}
+                className="flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition text-xs disabled:opacity-50">
+                <RefreshCw size={13} className={chunksLoading ? "animate-spin text-brand-400" : ""} />
+                Refresh
+              </button>
+            </div>
+
+            {/* Search */}
+            <div className="flex gap-3">
+              <div className="flex-1 relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  value={chunkSearch}
+                  onChange={e => setChunkSearch(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && fetchChunks(chunkSearch)}
+                  placeholder="Search chunks by keyword…"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500"
+                />
+              </div>
+              <button onClick={() => fetchChunks(chunkSearch)}
+                className="px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition font-medium">
+                Search
+              </button>
+            </div>
+
+            {/* Chunks list */}
+            {chunksLoading ? (
+              <div className="flex items-center justify-center h-32 gap-3 text-gray-400">
+                <RefreshCw size={18} className="animate-spin text-brand-400" />
+                <span className="text-sm">Loading chunks…</span>
+              </div>
+            ) : chunks.length === 0 ? (
+              <div className="text-center py-16 text-gray-500">
+                <Database size={40} className="mx-auto mb-3 opacity-30" />
+                <p className="text-sm">No chunks found. Upload documents to populate the vector store.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-gray-500">{chunks.length} chunk{chunks.length !== 1 ? "s" : ""} found</p>
+                {chunks.map((chunk: any, i: number) => (
+                  <div key={chunk.id || i} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {chunk.file_name && (
+                          <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-500/20">
+                            <FileText size={10} className="inline mr-1" />{chunk.file_name}
+                          </span>
+                        )}
+                        {chunk.collection && (
+                          <span className="text-xs bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded-full border border-violet-500/20">
+                            {chunk.collection}
+                          </span>
+                        )}
+                        {chunk.access_roles && (
+                          <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                            {Array.isArray(chunk.access_roles) ? chunk.access_roles.join(", ") : chunk.access_roles}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-gray-600 shrink-0">#{i + 1}</span>
+                    </div>
+                    <p className="text-sm text-gray-300 leading-relaxed line-clamp-4">
+                      {chunk.text || chunk.content || "(no text)"}
+                    </p>
+                    {chunk.score != null && (
+                      <p className="text-xs text-brand-400 mt-2">Relevance: {(chunk.score * 100).toFixed(1)}%</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── STORAGE INFO ── */}
+        {tab === "storage" && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <HardDrive size={18} className="text-emerald-400" /> Storage Information
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">Database and vector store details</p>
+              </div>
+              <button onClick={fetchStorage} disabled={storageLoading}
+                className="flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition text-xs disabled:opacity-50">
+                <RefreshCw size={13} className={storageLoading ? "animate-spin text-brand-400" : ""} />
+                Refresh
+              </button>
+            </div>
+
+            {storageLoading ? (
+              <div className="flex items-center justify-center h-32 gap-3 text-gray-400">
+                <RefreshCw size={18} className="animate-spin text-brand-400" />
+                <span className="text-sm">Loading storage info…</span>
+              </div>
+            ) : !storageInfo ? (
+              <div className="text-center py-12 text-gray-500">
+                <HardDrive size={40} className="mx-auto mb-3 opacity-30" />
+                <p className="text-sm">Could not load storage info. Backend may be unavailable.</p>
+                <button onClick={fetchStorage} className="mt-3 text-xs text-brand-400 hover:text-brand-300 underline">Retry</button>
+              </div>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-6">
+                {/* SQLite / PostgreSQL */}
+                <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
+                  <div className="flex items-center gap-3 mb-2">
+                    <Database size={20} className="text-brand-400" />
+                    <div>
+                      <h4 className="font-semibold text-white">Relational Database</h4>
+                      <p className="text-xs text-gray-400">{storageInfo.database?.type || "Unknown"}</p>
+                    </div>
+                    <span className="ml-auto text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/20">● Online</span>
+                  </div>
+                  <div className="space-y-2.5 text-sm">
+                    {[
+                      { label: "Type", value: storageInfo.database?.type },
+                      { label: "Location", value: storageInfo.database?.location, mono: true },
+                      { label: "Size", value: storageInfo.database?.size_bytes != null ? `${(storageInfo.database.size_bytes / 1024).toFixed(1)} KB` : "—" },
+                      { label: "Users", value: storageInfo.database?.users },
+                      { label: "Chat Logs", value: storageInfo.database?.chat_logs },
+                      { label: "Rules", value: storageInfo.database?.rules },
+                    ].map(({ label, value, mono }) => (
+                      <div key={label} className="flex justify-between items-center py-1.5 border-b border-gray-700/60 last:border-0">
+                        <span className="text-gray-400">{label}</span>
+                        <span className={`text-white font-medium ${mono ? "font-mono text-xs text-brand-300" : ""}`}>
+                          {value ?? "—"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Qdrant */}
+                <div className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
+                  <div className="flex items-center gap-3 mb-2">
+                    <Layers size={20} className="text-blue-400" />
+                    <div>
+                      <h4 className="font-semibold text-white">Vector Store (Qdrant)</h4>
+                      <p className="text-xs text-gray-400">{storageInfo.vector_store?.host || "localhost:6333"}</p>
+                    </div>
+                    <span className={`ml-auto text-xs px-2 py-0.5 rounded-full border ${
+                      storageInfo.vector_store?.status === "online"
+                        ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/20"
+                        : "bg-red-500/20 text-red-300 border-red-500/20"
+                    }`}>
+                      {storageInfo.vector_store?.status === "online" ? "● Online" : "✕ Offline"}
+                    </span>
+                  </div>
+                  <div className="space-y-2.5 text-sm">
+                    {[
+                      { label: "Status", value: storageInfo.vector_store?.status },
+                      { label: "Total Vectors", value: storageInfo.vector_store?.total_vectors ?? 0 },
+                      { label: "Collections", value: storageInfo.vector_store?.collections?.length ?? 0 },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="flex justify-between items-center py-1.5 border-b border-gray-700/60 last:border-0">
+                        <span className="text-gray-400">{label}</span>
+                        <span className="text-white font-medium">{value ?? "—"}</span>
+                      </div>
+                    ))}
+                    {(storageInfo.vector_store?.collections || []).length > 0 && (
+                      <div className="pt-2">
+                        <p className="text-xs text-gray-400 mb-2">Collections:</p>
+                        <div className="flex flex-wrap gap-2">
+                          {storageInfo.vector_store.collections.map((col: string) => (
+                            <span key={col} className="text-xs bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-500/20">
+                              {col}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {storageInfo.vector_store?.error && (
+                      <div className="mt-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                        <p className="text-xs text-red-400">{storageInfo.vector_store.error}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

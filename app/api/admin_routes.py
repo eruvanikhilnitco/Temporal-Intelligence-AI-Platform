@@ -552,3 +552,112 @@ def system_health(current_user: dict = Depends(require_admin)):
         statuses["postgres"] = {"status": "offline", "error": str(e)[:80]}
 
     return statuses
+
+
+# ── Qdrant Chunks Viewer ──────────────────────────────────────────────────────
+
+@router.get("/chunks")
+def get_chunks(
+    limit: int = Query(50, ge=1, le=200),
+    search: str = Query("", description="Filter by keyword"),
+    current_user: dict = Depends(require_admin),
+):
+    """Return stored document chunks from Qdrant for inspection."""
+    try:
+        from core.database import get_qdrant_connection
+        from qdrant_client import QdrantClient
+        cfg = get_qdrant_connection()
+        client = QdrantClient(host=cfg.host, port=cfg.port)
+
+        collections = client.get_collections().collections
+        all_chunks = []
+
+        for col in collections:
+            try:
+                results, _ = client.scroll(
+                    collection_name=col.name,
+                    limit=limit,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for point in results:
+                    payload = point.payload or {}
+                    text = payload.get("text", "")
+                    if search and search.lower() not in text.lower():
+                        continue
+                    all_chunks.append({
+                        "id": str(point.id),
+                        "collection": col.name,
+                        "text": text[:400],
+                        "file_name": payload.get("file_name", "Unknown"),
+                        "access_roles": payload.get("access_roles", []),
+                    })
+            except Exception as e:
+                logger.warning(f"Error reading collection {col.name}: {e}")
+
+        return {
+            "total": len(all_chunks),
+            "collections": [c.name for c in collections],
+            "chunks": all_chunks[:limit],
+        }
+    except Exception as e:
+        return {"total": 0, "collections": [], "chunks": [], "error": str(e)}
+
+
+@router.get("/storage/info")
+def storage_info(current_user: dict = Depends(require_admin)):
+    """Return info about where data is stored (SQLite/PostgreSQL + Qdrant)."""
+    import os
+
+    # DB info
+    from app.db import engine
+    db_url = str(engine.url)
+    is_sqlite = "sqlite" in db_url
+    db_path = db_url.replace("sqlite:///", "") if is_sqlite else db_url
+
+    from app.db import get_db
+    from app.models import User, ChatLog, Rule
+    db = next(get_db())
+    user_count = db.query(User).count()
+    chat_count = db.query(ChatLog).count()
+    rule_count = db.query(Rule).count()
+    db.close()
+
+    db_size = 0
+    if is_sqlite:
+        try:
+            db_size = os.path.getsize(db_path.lstrip("/"))
+        except Exception:
+            db_size = 0
+
+    # Qdrant info
+    qdrant_info = {"status": "offline", "collections": [], "total_vectors": 0}
+    try:
+        from core.database import get_qdrant_connection
+        from qdrant_client import QdrantClient
+        cfg = get_qdrant_connection()
+        client = QdrantClient(host=cfg.host, port=cfg.port)
+        cols = client.get_collections().collections
+        qdrant_info = {
+            "status": "online",
+            "host": f"{cfg.host}:{cfg.port}",
+            "collections": [c.name for c in cols],
+            "total_vectors": sum(
+                getattr(client.get_collection(c.name), "points_count", 0) or 0
+                for c in cols
+            ),
+        }
+    except Exception as e:
+        qdrant_info["error"] = str(e)[:100]
+
+    return {
+        "database": {
+            "type": "SQLite" if is_sqlite else "PostgreSQL",
+            "location": db_path if is_sqlite else "Remote PostgreSQL",
+            "size_bytes": db_size,
+            "users": user_count,
+            "chat_logs": chat_count,
+            "rules": rule_count,
+        },
+        "vector_store": qdrant_info,
+    }
