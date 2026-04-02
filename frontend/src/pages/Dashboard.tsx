@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { LogOut, Bell } from "lucide-react";
+import { useState, useEffect, Component, ReactNode } from "react";
+import { LogOut, Bell, AlertTriangle, RefreshCw } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import ChatInterface from "../components/ChatInterface";
 import DocumentUpload from "../components/DocumentUpload";
@@ -10,6 +10,33 @@ import KnowledgeGraphUI from "../components/KnowledgeGraphUI";
 import NotificationsPanel from "../components/NotificationsPanel";
 import { NavigateFn } from "../App";
 import axios from "axios";
+
+// ── Error Boundary — prevents one broken view from blanking the entire app ──
+class ErrorBoundary extends Component<
+  { children: ReactNode; label: string },
+  { error: string | null }
+> {
+  constructor(props: any) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(err: any) { return { error: err?.message || "Unknown error" }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex items-center justify-center h-full">
+          <div className="text-center p-8 bg-gray-900 border border-red-800/40 rounded-2xl max-w-md">
+            <AlertTriangle size={40} className="mx-auto text-red-400 mb-4" />
+            <p className="text-white font-bold text-base mb-2">{this.props.label} encountered an error</p>
+            <p className="text-gray-400 text-xs mb-4 font-mono break-all">{this.state.error}</p>
+            <button onClick={() => this.setState({ error: null })}
+              className="flex items-center gap-2 mx-auto px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition">
+              <RefreshCw size={14} /> Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph";
 
@@ -151,12 +178,12 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
 
         {/* Content */}
         <div className="flex-1 overflow-hidden">
-          {view === "chat"      && <ChatInterface userRole={user?.role} />}
-          {view === "upload"    && isAdmin && <DocumentUpload />}
-          {view === "admin"     && isAdmin && <AdminPanel user={user} />}
-          {view === "analytics" && isAdmin && <AnalyticsDashboard />}
-          {view === "settings"  && isAdmin && <SettingsPage />}
-          {view === "graph"     && isAdmin && <KnowledgeGraphUI />}
+          {view === "chat"      && <ErrorBoundary label="Chat"><ChatInterface userRole={user?.role} /></ErrorBoundary>}
+          {view === "upload"    && isAdmin && <ErrorBoundary label="Upload"><DocumentUpload /></ErrorBoundary>}
+          {view === "admin"     && isAdmin && <ErrorBoundary label="Admin Panel"><AdminPanel user={user} /></ErrorBoundary>}
+          {view === "analytics" && isAdmin && <ErrorBoundary label="Analytics"><AnalyticsDashboard /></ErrorBoundary>}
+          {view === "settings"  && isAdmin && <ErrorBoundary label="Settings"><SettingsPage /></ErrorBoundary>}
+          {view === "graph"     && isAdmin && <ErrorBoundary label="Knowledge Graph"><KnowledgeGraphUI /></ErrorBoundary>}
         </div>
       </main>
     </div>

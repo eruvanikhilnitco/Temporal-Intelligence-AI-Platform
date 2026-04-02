@@ -415,30 +415,19 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
 
   return (
     <div className="flex flex-col h-full bg-gray-950">
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0 bg-gray-900/50">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-600 to-violet-600 flex items-center justify-center">
-            <Bot size={15} className="text-white" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-white">CortexFlow AI</p>
-            <p className="text-xs text-gray-400">Hybrid RAG · Graph · Multi-hop · Agent Routing</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {isAdmin && <RoleSelector role={role} onChange={setRole} />}
-          <button
-            onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}
-            className={`p-1.5 rounded-lg transition text-sm ${showHistory ? "bg-brand-600/20 text-brand-300" : "hover:bg-gray-800 text-gray-500 hover:text-gray-300"}`}
-            title="Chat history"
-          >
-            <History size={15} />
-          </button>
-          <button onClick={clearHistory} className="p-1.5 hover:bg-gray-800 rounded-lg text-gray-500 hover:text-gray-300 transition" title="Clear chat">
-            <RefreshCw size={15} />
-          </button>
-        </div>
+      {/* ── Toolbar (history + clear, no branding header) ── */}
+      <div className="flex items-center justify-end px-4 py-2 border-b border-gray-800 shrink-0 bg-gray-900/50 gap-2">
+        {isAdmin && <RoleSelector role={role} onChange={setRole} />}
+        <button
+          onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition text-xs font-medium ${showHistory ? "bg-brand-600/20 text-brand-300" : "hover:bg-gray-800 text-gray-500 hover:text-gray-300"}`}
+          title="Chat history"
+        >
+          <History size={13} /> History
+        </button>
+        <button onClick={clearHistory} className="p-1.5 hover:bg-gray-800 rounded-lg text-gray-500 hover:text-gray-300 transition" title="Clear chat">
+          <RefreshCw size={13} />
+        </button>
       </div>
 
       {/* ── History panel ── */}
