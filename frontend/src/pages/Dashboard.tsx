@@ -178,7 +178,10 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
 
         {/* Content */}
         <div className="flex-1 overflow-hidden">
-          {view === "chat"      && <ErrorBoundary label="Chat"><ChatInterface userRole={user?.role} /></ErrorBoundary>}
+          {/* Chat is always mounted — hidden via CSS so state (messages) persists when navigating away */}
+          <div className={view === "chat" ? "h-full" : "hidden"}>
+            <ErrorBoundary label="Chat"><ChatInterface userRole={user?.role} /></ErrorBoundary>
+          </div>
           {view === "upload"    && isAdmin && <ErrorBoundary label="Upload"><DocumentUpload /></ErrorBoundary>}
           {view === "admin"     && isAdmin && <ErrorBoundary label="Admin Panel"><AdminPanel user={user} /></ErrorBoundary>}
           {view === "analytics" && isAdmin && <ErrorBoundary label="Analytics"><AnalyticsDashboard /></ErrorBoundary>}

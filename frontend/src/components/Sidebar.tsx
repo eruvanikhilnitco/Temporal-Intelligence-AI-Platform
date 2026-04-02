@@ -99,8 +99,10 @@ export default function Sidebar({ activeView, onViewChange, isOnline, user, unre
             {isOnline ? "API Online" : "API Offline"}
           </span>
         </div>
-        <p className="text-xs text-gray-600">
-          {isAdmin ? "🔗 Hybrid RAG · Graph · Agent" : "💬 Chat Mode"}
+        <p className="text-xs text-gray-600 italic leading-relaxed">
+          {isAdmin
+            ? '"Intelligence is the ability to adapt to change." — S. Hawking'
+            : '"Knowledge is power." — F. Bacon'}
         </p>
       </div>
     </aside>

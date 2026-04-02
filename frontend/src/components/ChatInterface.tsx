@@ -298,6 +298,9 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
     }
   }, []);
 
+  // Load history on mount so sidebar is populated immediately
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
   const restoreHistoryItem = useCallback((item: any) => {
     // Restore the Q&A pair as actual messages in the chat
     const userMsg: Message = {
@@ -413,119 +416,121 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
     setMessages(prev => prev.slice(0, 1));
   }
 
+  // Group history by date label
+  const groupedHistory = (() => {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate()-1);
+    const groups: Record<string, any[]> = {};
+    history.forEach(h => {
+      const d = new Date(h.created_at);
+      d.setHours(0,0,0,0);
+      const label = d >= today ? "Today" : d >= yesterday ? "Yesterday" : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      if (!groups[label]) groups[label] = [];
+      groups[label].push(h);
+    });
+    return groups;
+  })();
+
   return (
-    <div className="flex flex-col h-full bg-gray-950">
-      {/* ── Toolbar (history + clear, no branding header) ── */}
-      <div className="flex items-center justify-end px-4 py-2 border-b border-gray-800 shrink-0 bg-gray-900/50 gap-2">
-        {isAdmin && <RoleSelector role={role} onChange={setRole} />}
-        <button
-          onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition text-xs font-medium ${showHistory ? "bg-brand-600/20 text-brand-300" : "hover:bg-gray-800 text-gray-500 hover:text-gray-300"}`}
-          title="Chat history"
-        >
-          <History size={13} /> History
-        </button>
-        <button onClick={clearHistory} className="p-1.5 hover:bg-gray-800 rounded-lg text-gray-500 hover:text-gray-300 transition" title="Clear chat">
-          <RefreshCw size={13} />
-        </button>
-      </div>
+    <div className="flex h-full bg-gray-950 overflow-hidden">
 
-      {/* ── History panel ── */}
-      {showHistory && (
-        <div className="bg-gray-900 border-b border-gray-800 px-6 py-3 max-h-64 overflow-y-auto shrink-0">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-xs font-medium text-gray-400">Chat History — click to restore</p>
-            <button onClick={() => setShowHistory(false)} className="text-xs text-gray-600 hover:text-gray-400">Close</button>
-          </div>
-          {history.length === 0 ? (
-            <p className="text-xs text-gray-500">No history yet. Start chatting to build history.</p>
-          ) : (
-            <div className="space-y-1.5">
-              {history.slice(0, 20).map(h => (
-                <button
-                  key={h.id}
-                  onClick={() => restoreHistoryItem(h)}
-                  className="w-full text-left bg-gray-800 hover:bg-gray-700 rounded-lg px-3 py-2.5 transition group"
-                >
-                  <p className="text-xs text-gray-200 truncate">{h.question}</p>
-                  <p className="text-xs text-gray-500 truncate mt-0.5 group-hover:text-gray-400">{h.answer?.slice(0, 80)}…</p>
-                  {h.confidence > 0 && (
-                    <p className="text-xs text-brand-400 mt-0.5">{Math.round(h.confidence)}% confidence</p>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Messages ── */}
-      <div className="flex-1 overflow-y-auto chat-scroll px-4 md:px-6 py-5 space-y-5">
-        {messages.map(msg => (
-          <MessageBubble
-            key={msg.id}
-            msg={msg}
-            onCopy={copyText}
-            onFeedback={submitFeedback}
-          />
-        ))}
-        {copied && (
-          <div className="fixed bottom-24 right-6 bg-gray-800 border border-gray-700 text-xs text-emerald-400 px-3 py-1.5 rounded-lg shadow flex items-center gap-1.5">
-            <CheckCircle size={11} /> Copied!
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* ── Suggestions ── */}
-      {messages.length <= 1 && (
-        <div className="px-6 pb-2 grid grid-cols-2 gap-2">
-          {SUGGESTIONS.map(s => (
-            <button
-              key={s}
-              onClick={() => handleSend(s)}
-              className="text-left text-xs text-gray-400 hover:text-gray-200 bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 transition"
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ── Input ── */}
-      <div className="shrink-0 px-4 md:px-6 py-4 border-t border-gray-800 bg-gray-900/30">
-        <div className="flex gap-3 items-end max-w-4xl mx-auto">
-          <div className="flex-1 relative">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask anything about your documents…"
-              rows={1}
-              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 resize-none focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/40 transition max-h-32 overflow-y-auto"
-              style={{ minHeight: "46px" }}
-              onInput={e => {
-                const t = e.currentTarget;
-                t.style.height = "auto";
-                t.style.height = `${Math.min(t.scrollHeight, 128)}px`;
-              }}
-            />
-          </div>
-          <button
-            onClick={() => handleSend()}
-            disabled={!input.trim() || loading}
-            className="bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl p-3 transition shrink-0 shadow-lg shadow-brand-600/20"
-          >
-            {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+      {/* ── Left history sidebar ── */}
+      <div className="w-56 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <p className="text-xs font-semibold text-gray-300 uppercase tracking-wider">History</p>
+          <button onClick={clearHistory} title="Clear chat" className="p-1 hover:bg-gray-800 rounded text-gray-600 hover:text-gray-400 transition">
+            <RefreshCw size={12} />
           </button>
         </div>
-        <p className="text-xs text-gray-600 text-center mt-2">
-          {isAdmin
-            ? <>Role: <span className="text-red-400 capitalize">{role}</span> · Full retrieval enabled · Enter to send</>
-            : <>Summarized responses · Enter to send · Shift+Enter for new line</>
-          }
-        </p>
+        <div className="flex-1 overflow-y-auto py-2">
+          {history.length === 0 ? (
+            <p className="text-xs text-gray-600 px-4 py-3 italic">No history yet.</p>
+          ) : (
+            Object.entries(groupedHistory).map(([label, items]) => (
+              <div key={label}>
+                <p className="text-xs text-gray-600 uppercase tracking-wider px-4 pt-3 pb-1">{label}</p>
+                {items.map(h => (
+                  <button key={h.id} onClick={() => restoreHistoryItem(h)}
+                    className="w-full text-left px-4 py-2 hover:bg-gray-800 transition group">
+                    <p className="text-xs text-gray-300 truncate group-hover:text-white">{h.question}</p>
+                    {h.confidence > 0 && (
+                      <p className="text-xs text-brand-500 mt-0.5">{Math.round(h.confidence)}% confidence</p>
+                    )}
+                  </button>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-gray-800">
+          <button onClick={() => { setMessages([{ id: "welcome", role: "assistant", content: welcomeMsg, timestamp: new Date(), graphUsed: false, confidence: 100, queryType: "greeting", sources: [] }]); setInput(""); }}
+            className="w-full text-xs text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-lg px-3 py-2 transition text-left">
+            + New conversation
+          </button>
+        </div>
+      </div>
+
+      {/* ── Right chat pane ── */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Toolbar */}
+        <div className="flex items-center justify-end px-4 py-2 border-b border-gray-800 shrink-0 bg-gray-900/50 gap-2">
+          {isAdmin && <RoleSelector role={role} onChange={setRole} />}
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto chat-scroll px-4 md:px-6 py-5 space-y-5">
+          {messages.map(msg => (
+            <MessageBubble key={msg.id} msg={msg} onCopy={copyText} onFeedback={submitFeedback} />
+          ))}
+          {copied && (
+            <div className="fixed bottom-24 right-6 bg-gray-800 border border-gray-700 text-xs text-emerald-400 px-3 py-1.5 rounded-lg shadow flex items-center gap-1.5">
+              <CheckCircle size={11} /> Copied!
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Suggestions */}
+        {messages.length <= 1 && (
+          <div className="px-6 pb-2 grid grid-cols-2 gap-2">
+            {SUGGESTIONS.map(s => (
+              <button key={s} onClick={() => handleSend(s)}
+                className="text-left text-xs text-gray-400 hover:text-gray-200 bg-gray-900 hover:bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 transition">
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Input */}
+        <div className="shrink-0 px-4 md:px-6 py-4 border-t border-gray-800 bg-gray-900/30">
+          <div className="flex gap-3 items-end max-w-4xl mx-auto">
+            <div className="flex-1 relative">
+              <textarea ref={textareaRef} value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ask anything about your documents…"
+                rows={1}
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 resize-none focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/40 transition max-h-32 overflow-y-auto"
+                style={{ minHeight: "46px" }}
+                onInput={e => {
+                  const t = e.currentTarget;
+                  t.style.height = "auto";
+                  t.style.height = `${Math.min(t.scrollHeight, 128)}px`;
+                }}
+              />
+            </div>
+            <button onClick={() => handleSend()} disabled={!input.trim() || loading}
+              className="bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl p-3 transition shrink-0 shadow-lg shadow-brand-600/20">
+              {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+            </button>
+          </div>
+          <p className="text-xs text-gray-600 text-center mt-2">
+            {isAdmin
+              ? <>Role: <span className="text-red-400 capitalize">{role}</span> · Full retrieval · Enter to send</>
+              : <>Summarized responses · Enter to send · Shift+Enter for new line</>}
+          </p>
+        </div>
       </div>
     </div>
   );

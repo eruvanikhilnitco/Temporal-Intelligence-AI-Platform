@@ -61,8 +61,12 @@ function useForceLayout(
   iterations: number = 80
 ): GraphNode[] {
   const [positioned, setPositioned] = useState<GraphNode[]>([]);
+  const prevKeyRef = useRef("");
 
   useEffect(() => {
+    const key = nodes.map(n => n.id).join("|");
+    if (key === prevKeyRef.current && positioned.length > 0) return; // same nodes — keep stable
+    prevKeyRef.current = key;
     if (!nodes.length) { setPositioned([]); return; }
 
     const REPULSION = 3500;
@@ -70,14 +74,17 @@ function useForceLayout(
     const DAMPING = 0.85;
     const CENTER_PULL = 0.01;
 
-    // Init positions
-    const ns: GraphNode[] = nodes.map((n, i) => ({
-      ...n,
-      x: width / 2 + (Math.random() - 0.5) * width * 0.6,
-      y: height / 2 + (Math.random() - 0.5) * height * 0.6,
-      vx: 0,
-      vy: 0,
-    }));
+    // Init positions deterministically using golden angle spiral — no random jitter
+    const ns: GraphNode[] = nodes.map((n, i) => {
+      const angle = i * 2.399963; // golden angle in radians
+      const radius = Math.sqrt(i + 1) * Math.min(width, height) * 0.07;
+      return {
+        ...n,
+        x: Math.max(50, Math.min(width - 50, width / 2 + Math.cos(angle) * radius)),
+        y: Math.max(50, Math.min(height - 50, height / 2 + Math.sin(angle) * radius)),
+        vx: 0, vy: 0,
+      };
+    });
 
     const nodeMap: Record<string, GraphNode> = {};
     ns.forEach(n => { nodeMap[n.id] = n; });

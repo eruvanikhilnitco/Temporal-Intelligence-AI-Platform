@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Key, Zap, Shield, Database, Bell, RefreshCw, Check, Eye, EyeOff } from "lucide-react";
 
 type SettingTab = "api" | "model" | "cache" | "security" | "notifications";
@@ -13,6 +13,47 @@ function Section({ title, desc, icon: Icon, children }: any) {
       <p className="text-xs text-gray-400 mb-5">{desc}</p>
       {children}
     </div>
+  );
+}
+
+function NotificationsSection() {
+  const ITEMS = [
+    { key: "security", label: "Security alerts", desc: "Prompt injection attempts and rate limit violations", defaultOn: true },
+    { key: "health",   label: "System health",   desc: "Database disconnections and API failures",          defaultOn: true },
+    { key: "docs",     label: "New documents",    desc: "Notify when documents finish ingestion",            defaultOn: false },
+  ];
+  const [enabled, setEnabled] = useState<Record<string, boolean>>(
+    Object.fromEntries(ITEMS.map(i => [i.key, i.defaultOn]))
+  );
+  const [saved, setSaved] = useState(false);
+  const toggle = useCallback((key: string) => setEnabled(p => ({ ...p, [key]: !p[key] })), []);
+  const save = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
+
+  return (
+    <Section icon={Bell} title="Alerts & Notifications" desc="Configure which system events trigger notifications.">
+      <div className="space-y-4">
+        {ITEMS.map(({ key, label, desc }) => (
+          <div key={key} className="flex items-start gap-4">
+            <div className="flex-1">
+              <p className="text-sm font-medium text-white">{label}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{desc}</p>
+            </div>
+            <button
+              onClick={() => toggle(key)}
+              className={`w-10 h-5 rounded-full transition-colors relative shrink-0 mt-0.5 ${enabled[key] ? "bg-brand-600" : "bg-gray-700"}`}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${enabled[key] ? "left-5" : "left-0.5"}`} />
+            </button>
+          </div>
+        ))}
+        <div className="pt-2 flex justify-end">
+          <button onClick={save}
+            className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition font-medium ${saved ? "bg-emerald-600 text-white" : "bg-brand-600 hover:bg-brand-500 text-white"}`}>
+            {saved ? <><Check size={14} /> Saved</> : "Save preferences"}
+          </button>
+        </div>
+      </div>
+    </Section>
   );
 }
 
@@ -254,28 +295,7 @@ export default function SettingsPage() {
         )}
 
         {/* ── NOTIFICATIONS ── */}
-        {tab === "notifications" && (
-          <Section icon={Bell} title="Alerts & Notifications" desc="Configure system alerts and notification preferences.">
-            <div className="space-y-4">
-              {[
-                { label: "Security alerts", desc: "Prompt injection attempts, rate limit violations" },
-                { label: "System health", desc: "Database disconnections, API failures" },
-                { label: "Usage reports", desc: "Weekly query and performance summaries" },
-                { label: "New documents", desc: "Notify when documents finish ingestion" },
-              ].map(({ label, desc }, i) => (
-                <div key={label} className="flex items-start gap-3">
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-white">{label}</p>
-                    <p className="text-xs text-gray-400">{desc}</p>
-                  </div>
-                  <button className={`w-10 h-5 rounded-full transition relative ${i < 2 ? "bg-brand-600" : "bg-gray-700"}`}>
-                    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${i < 2 ? "left-5" : "left-0.5"}`} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </Section>
-        )}
+        {tab === "notifications" && <NotificationsSection />}
       </div>
     </div>
   );
