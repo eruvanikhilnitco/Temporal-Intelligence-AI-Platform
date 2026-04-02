@@ -29,9 +29,11 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
-    # Create all database tables
-    init_db()
-    # Seed default security rules if none exist
+    try:
+        init_db()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"[Startup] DB init failed: {e}")
     _seed_default_rules()
 
 

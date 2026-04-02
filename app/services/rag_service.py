@@ -1,17 +1,31 @@
 import logging
 from typing import Optional
-from services.phase1_rag import Phase1RAG
 
 logger = logging.getLogger(__name__)
 
-rag = Phase1RAG(folder_path="sample_data")
-
-# Lazy-init orchestrator to avoid circular imports
+# Lazy-init RAG to avoid crashing the backend if Qdrant/Neo4j are unavailable
+_rag = None
 _orchestrator = None
+
+
+def _get_rag():
+    global _rag
+    if _rag is None:
+        try:
+            from services.phase1_rag import Phase1RAG
+            _rag = Phase1RAG(folder_path="sample_data")
+            logger.info("[RAGService] Phase1RAG initialized")
+        except Exception as e:
+            logger.warning(f"[RAGService] Phase1RAG init failed (Qdrant/Neo4j may be offline): {e}")
+            _rag = None
+    return _rag
 
 
 def _get_orchestrator():
     global _orchestrator
+    rag = _get_rag()
+    if rag is None:
+        return None
     if _orchestrator is None:
         try:
             from services.agent_orchestrator import AgentOrchestrator
@@ -40,6 +54,7 @@ def ask_rag_full(question: str, role: str, session_id: str = "") -> dict:
     """
     Full response with sources, confidence, query type, graph_used.
     Uses Agent Orchestrator when available, falls back to Phase1RAG.
+    Returns a graceful message if AI backend is unavailable.
     """
     orch = _get_orchestrator()
 
@@ -58,32 +73,46 @@ def ask_rag_full(question: str, role: str, session_id: str = "") -> dict:
         except Exception as e:
             logger.error(f"[RAGService] Orchestrator error: {e}")
 
-    # Fallback to Phase1RAG directly
-    answer = rag.ask(question, user_role=role)
+    rag = _get_rag()
+    if rag is not None:
+        try:
+            answer = rag.ask(question, user_role=role)
+            return {
+                "answer": answer,
+                "graph_used": False,
+                "confidence": 75.0,
+                "query_type": "fact",
+                "sources": [],
+                "cache_hit": False,
+                "tools_used": ["DocumentSearchTool"],
+            }
+        except Exception as e:
+            logger.error(f"[RAGService] Phase1RAG query error: {e}")
+
     return {
-        "answer": answer,
+        "answer": "The AI retrieval service is currently unavailable. Please ensure Qdrant is running and documents have been ingested.",
         "graph_used": False,
-        "confidence": 75.0,
-        "query_type": "fact",
+        "confidence": 0.0,
+        "query_type": "error",
         "sources": [],
         "cache_hit": False,
-        "tools_used": ["DocumentSearchTool"],
+        "tools_used": [],
     }
 
 
 def ingest_file(file_path: str) -> Optional[dict]:
     """
-    Ingest a single uploaded file:
-      1. Run the pipeline on that file to get chunks
-      2. Store embeddings in Qdrant
-      3. Extract entities and store in Neo4j (Phase 3)
-
+    Ingest a single uploaded file into Qdrant and Neo4j.
     Returns extracted entity dict or None on error.
     """
     import uuid
     from pathlib import Path
     from services.phase1_pipeline import Phase1Pipeline
     from qdrant_client.models import PointStruct
+
+    rag = _get_rag()
+    if rag is None:
+        raise RuntimeError("RAG service unavailable — Qdrant may be offline.")
 
     pipeline = Phase1Pipeline(folder_path=str(Path(file_path).parent))
 
@@ -114,7 +143,6 @@ def ingest_file(file_path: str) -> Optional[dict]:
         rag.client.upsert(collection_name=rag.collection_name, points=points)
         logger.info(f"Stored {len(points)} vectors for {fname}")
 
-    # Phase 3: build graph
     entities = rag.graph_rag.ingest_document(text, fname)
     logger.info(f"Graph ingestion complete for {fname}: {entities}")
 
