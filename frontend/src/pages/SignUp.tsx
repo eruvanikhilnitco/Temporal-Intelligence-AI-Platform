@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, AlertCircle, Check, Eye, EyeOff } from "lucide-react";
+import { Loader2, AlertCircle, Check, Eye, EyeOff, Shield, User } from "lucide-react";
 import axios from "axios";
 import { NavigateFn } from "../App";
 
@@ -21,20 +21,29 @@ function PasswordStrength({ password }: { password: string }) {
   );
 }
 
-export default function SignUp({ navigate }: { navigate: NavigateFn }) {
+interface SignUpProps {
+  navigate: NavigateFn;
+  role: "user" | "admin";
+}
+
+export default function SignUp({ navigate, role }: SignUpProps) {
   const [formData, setFormData] = useState({ email: "", password: "", name: "" });
   const [showPwd, setShowPwd] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
 
+  const isAdmin = role === "admin";
+  const backendRole = isAdmin ? "admin" : "client";
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      const payload = { ...formData, role: "client" };
-      const res = await axios.post("/auth/signup", payload);
+      const endpoint = isAdmin ? "/auth/signup/admin" : "/auth/signup/user";
+      const payload = { ...formData, role: backendRole };
+      const res = await axios.post(endpoint, payload);
       if (res.data.status === "success") {
         setSuccess(true);
         setTimeout(() => navigate("login", { email: formData.email }), 1500);
@@ -57,14 +66,32 @@ export default function SignUp({ navigate }: { navigate: NavigateFn }) {
           <span>🧠</span> CortexFlow
         </div>
         <div>
-          <blockquote className="text-2xl font-light text-gray-300 leading-relaxed mb-6">
-            "CortexFlow transformed how our team extracts insights from thousands of contracts — what took days now takes seconds."
-          </blockquote>
+          {isAdmin ? (
+            <>
+              <div className="inline-flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 text-sm px-4 py-2 rounded-xl mb-6">
+                <Shield size={16} /> Admin Registration
+              </div>
+              <blockquote className="text-2xl font-light text-gray-300 leading-relaxed mb-6">
+                "As an admin, you have full access to document ingestion, analytics, and system controls."
+              </blockquote>
+            </>
+          ) : (
+            <>
+              <div className="inline-flex items-center gap-2 bg-brand-600/10 border border-brand-500/20 text-brand-400 text-sm px-4 py-2 rounded-xl mb-6">
+                <User size={16} /> User Registration
+              </div>
+              <blockquote className="text-2xl font-light text-gray-300 leading-relaxed mb-6">
+                "CortexFlow transformed how our team extracts insights from thousands of contracts — what took days now takes seconds."
+              </blockquote>
+            </>
+          )}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-brand-600 flex items-center justify-center font-bold text-white">A</div>
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${isAdmin ? "bg-red-600" : "bg-brand-600"}`}>
+              {isAdmin ? <Shield size={18} /> : "A"}
+            </div>
             <div>
-              <p className="text-sm font-medium text-white">Aditya V.</p>
-              <p className="text-xs text-gray-400">Lead Engineer, NITCO</p>
+              <p className="text-sm font-medium text-white">{isAdmin ? "Admin Access" : "Aditya V."}</p>
+              <p className="text-xs text-gray-400">{isAdmin ? "Full system privileges" : "Lead Engineer, NITCO"}</p>
             </div>
           </div>
         </div>
@@ -82,8 +109,20 @@ export default function SignUp({ navigate }: { navigate: NavigateFn }) {
             <span>🧠</span> CortexFlow
           </div>
 
-          <h1 className="text-2xl font-bold text-white mb-1">Create your account</h1>
-          <p className="text-gray-400 text-sm mb-8">Start with the free plan. No credit card required.</p>
+          {/* Role badge */}
+          <div className={`inline-flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full mb-5 ${isAdmin ? "bg-red-500/10 border border-red-500/20 text-red-400" : "bg-brand-600/10 border border-brand-500/20 text-brand-400"}`}>
+            {isAdmin ? <Shield size={12} /> : <User size={12} />}
+            {isAdmin ? "Admin Account" : "User Account"}
+          </div>
+
+          <h1 className="text-2xl font-bold text-white mb-1">
+            {isAdmin ? "Create Admin Account" : "Create your account"}
+          </h1>
+          <p className="text-gray-400 text-sm mb-8">
+            {isAdmin
+              ? "Admin accounts have full access to document management and system controls."
+              : "Start with free access. No credit card required."}
+          </p>
 
           {success && (
             <div className="flex gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-sm text-emerald-400 mb-4">
@@ -123,8 +162,8 @@ export default function SignUp({ navigate }: { navigate: NavigateFn }) {
               <PasswordStrength password={formData.password} />
             </div>
             <button type="submit" disabled={loading || success}
-              className="w-full bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 rounded-xl transition flex items-center justify-center gap-2 text-sm">
-              {loading ? <Loader2 size={16} className="animate-spin" /> : "Create Account"}
+              className={`w-full disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 rounded-xl transition flex items-center justify-center gap-2 text-sm ${isAdmin ? "bg-red-600 hover:bg-red-500" : "bg-brand-600 hover:bg-brand-500"}`}>
+              {loading ? <Loader2 size={16} className="animate-spin" /> : (isAdmin ? "Create Admin Account" : "Create Account")}
             </button>
           </form>
 
@@ -137,6 +176,19 @@ export default function SignUp({ navigate }: { navigate: NavigateFn }) {
           <div className="mt-6 pt-6 border-t border-gray-800 text-center text-sm text-gray-400">
             Already have an account?{" "}
             <button onClick={() => navigate("login")} className="text-brand-400 hover:text-brand-300 font-medium">Sign in</button>
+          </div>
+
+          {/* Switch signup type */}
+          <div className="mt-3 text-center text-sm text-gray-500">
+            {isAdmin ? (
+              <>Looking for user access?{" "}
+                <button onClick={() => navigate("signup-user")} className="text-brand-400 hover:text-brand-300 font-medium">Register as User</button>
+              </>
+            ) : (
+              <>Need admin access?{" "}
+                <button onClick={() => navigate("signup-admin")} className="text-red-400 hover:text-red-300 font-medium">Register as Admin</button>
+              </>
+            )}
           </div>
         </div>
       </div>

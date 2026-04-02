@@ -22,6 +22,9 @@ const VIEW_LABELS: Record<View, string> = {
   graph: "Knowledge Graph",
 };
 
+// Views restricted to admin only
+const ADMIN_ONLY_VIEWS: View[] = ["upload", "admin", "analytics", "settings", "graph"];
+
 export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
   const [view, setView] = useState<View>("chat");
   const [isOnline, setIsOnline] = useState(false);
@@ -62,11 +65,20 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
     navigate("login");
   }
 
+  // Enforce role-based view access — non-admins can only access chat
+  function handleViewChange(requested: View) {
+    const isAdmin = user?.role === "admin";
+    if (!isAdmin && ADMIN_ONLY_VIEWS.includes(requested)) return;
+    setView(requested);
+  }
+
+  const isAdmin = user?.role === "admin";
+
   return (
     <div className="flex h-screen overflow-hidden bg-gray-950 relative">
       <Sidebar
         activeView={view}
-        onViewChange={setView}
+        onViewChange={handleViewChange}
         isOnline={isOnline}
         user={user}
         unreadAlerts={unreadAlerts}
@@ -78,12 +90,12 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
           <div>
             <h1 className="text-base font-semibold text-white">{VIEW_LABELS[view]}</h1>
             <p className="text-xs text-gray-500 mt-0.5">
-              {view === "chat" && "Hybrid RAG · Graph · Multi-hop · Agent Routing"}
-              {view === "upload" && "Phase 1–3 ingestion pipeline"}
-              {view === "admin" && "System administration & security"}
+              {view === "chat"      && (isAdmin ? "Hybrid RAG · Graph · Multi-hop · Agent Routing" : "AI-powered document assistant")}
+              {view === "upload"    && "Phase 1–3 ingestion pipeline"}
+              {view === "admin"     && "System administration & security"}
               {view === "analytics" && "Performance metrics & engagement"}
-              {view === "settings" && "Configuration & API keys"}
-              {view === "graph" && "Entity relationships from your documents"}
+              {view === "settings"  && "Configuration & API keys"}
+              {view === "graph"     && "Entity relationships from your documents"}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -104,25 +116,27 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
               </div>
             )}
 
-            {/* Notifications bell */}
-            <div className="relative">
-              <button
-                onClick={() => setShowNotifications(v => !v)}
-                className="relative p-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition"
-                title="Notifications"
-              >
-                <Bell size={18} />
-                {unreadAlerts > 0 && (
-                  <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
+            {/* Notifications bell — admin only */}
+            {isAdmin && (
+              <div className="relative">
+                <button
+                  onClick={() => setShowNotifications(v => !v)}
+                  className="relative p-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition"
+                  title="Notifications"
+                >
+                  <Bell size={18} />
+                  {unreadAlerts > 0 && (
+                    <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
+                  )}
+                </button>
+                {showNotifications && (
+                  <NotificationsPanel
+                    onClose={() => setShowNotifications(false)}
+                    isAdmin={true}
+                  />
                 )}
-              </button>
-              {showNotifications && (
-                <NotificationsPanel
-                  onClose={() => setShowNotifications(false)}
-                  isAdmin={user?.role === "admin"}
-                />
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Logout */}
             <button
@@ -137,12 +151,12 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
 
         {/* Content */}
         <div className="flex-1 overflow-hidden">
-          {view === "chat"      && <ChatInterface />}
-          {view === "upload"    && <DocumentUpload />}
-          {view === "admin"     && <AdminPanel user={user} />}
-          {view === "analytics" && <AnalyticsDashboard />}
-          {view === "settings"  && <SettingsPage />}
-          {view === "graph"     && <KnowledgeGraphUI />}
+          {view === "chat"      && <ChatInterface userRole={user?.role} />}
+          {view === "upload"    && isAdmin && <DocumentUpload />}
+          {view === "admin"     && isAdmin && <AdminPanel user={user} />}
+          {view === "analytics" && isAdmin && <AnalyticsDashboard />}
+          {view === "settings"  && isAdmin && <SettingsPage />}
+          {view === "graph"     && isAdmin && <KnowledgeGraphUI />}
         </div>
       </main>
     </div>

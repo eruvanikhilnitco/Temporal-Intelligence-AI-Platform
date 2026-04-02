@@ -226,12 +226,19 @@ const SUGGESTIONS = [
 ];
 
 // ── Main ChatInterface ────────────────────────────────────────────────────────
-export default function ChatInterface() {
+export default function ChatInterface({ userRole }: { userRole?: string }) {
+  const isAdmin = userRole === "admin";
+  const effectiveRole: Role = isAdmin ? "admin" : "user";
+
+  const welcomeMsg = isAdmin
+    ? "Hello Admin! I'm **CortexFlow AI** — your intelligent document assistant.\n\nYou have **full retrieval access**: exact line lookup, verbatim document content, source citations, and confidence scores.\n\nAsk any question and I'll return precise results with document references."
+    : "Hello! I'm **CortexFlow AI** — your intelligent document assistant.\n\nAsk me anything about the documents in the knowledge base and I'll provide a clear, summarized answer.";
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
       role: "assistant",
-      content: "Hello! I'm **CortexFlow AI** — your intelligent document assistant.\n\nI use **hybrid RAG** (vector + knowledge graph), **multi-hop reasoning**, and **cross-encoder re-ranking** to answer questions with precision.\n\nUpload your documents in the Upload section, then ask me anything. I'll show confidence scores and source citations with every answer.",
+      content: welcomeMsg,
       timestamp: new Date(),
       graphUsed: false,
       confidence: 100,
@@ -240,7 +247,7 @@ export default function ChatInterface() {
     },
   ]);
   const [input, setInput] = useState("");
-  const [role, setRole] = useState<Role>("user");
+  const [role, setRole] = useState<Role>(effectiveRole);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState("");
   const [showHistory, setShowHistory] = useState(false);
@@ -396,7 +403,7 @@ export default function ChatInterface() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <RoleSelector role={role} onChange={setRole} />
+          {isAdmin && <RoleSelector role={role} onChange={setRole} />}
           <button
             onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}
             className={`p-1.5 rounded-lg transition text-sm ${showHistory ? "bg-brand-600/20 text-brand-300" : "hover:bg-gray-800 text-gray-500 hover:text-gray-300"}`}
@@ -494,7 +501,10 @@ export default function ChatInterface() {
           </button>
         </div>
         <p className="text-xs text-gray-600 text-center mt-2">
-          Role: <span className="text-gray-500 capitalize">{role}</span> · Enter to send · Shift+Enter for new line
+          {isAdmin
+            ? <>Role: <span className="text-red-400 capitalize">{role}</span> · Full retrieval enabled · Enter to send</>
+            : <>Summarized responses · Enter to send · Shift+Enter for new line</>
+          }
         </p>
       </div>
     </div>

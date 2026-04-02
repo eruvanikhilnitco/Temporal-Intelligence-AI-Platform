@@ -6,7 +6,15 @@ import ForgotPassword from "./pages/ForgotPassword";
 import Dashboard from "./pages/Dashboard";
 import "./index.css";
 
-export type Page = "landing" | "signup" | "login" | "forgot-password" | "dashboard";
+export type Page =
+  | "landing"
+  | "signup"
+  | "signup-user"
+  | "signup-admin"
+  | "login"
+  | "forgot-password"
+  | "dashboard";
+
 export type NavigateFn = (page: Page, opts?: { email?: string }) => void;
 
 export default function App() {
@@ -25,11 +33,13 @@ export default function App() {
   }
 
   switch (page) {
-    case "landing":       return <Landing navigate={navigate} />;
-    case "signup":        return <SignUp navigate={navigate} />;
-    case "login":         return <Login navigate={navigate} defaultEmail={loginEmail} />;
+    case "landing":         return <Landing navigate={navigate} />;
+    case "signup":          return <SignUp navigate={navigate} role="user" />;
+    case "signup-user":     return <SignUp navigate={navigate} role="user" />;
+    case "signup-admin":    return <SignUp navigate={navigate} role="admin" />;
+    case "login":           return <Login navigate={navigate} defaultEmail={loginEmail} />;
     case "forgot-password": return <ForgotPassword navigate={navigate} />;
-    case "dashboard":     return <Dashboard navigate={navigate} />;
-    default:              return <Landing navigate={navigate} />;
+    case "dashboard":       return <Dashboard navigate={navigate} />;
+    default:                return <Landing navigate={navigate} />;
   }
 }

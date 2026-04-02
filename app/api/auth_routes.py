@@ -10,8 +10,31 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/signup", response_model=dict)
 async def signup(user_data: UserSignUp, db: Session = Depends(get_db)):
-    """Register a new user"""
+    """Register a new user (legacy — defaults to client role)"""
     try:
+        user_data.role = "client"
+        user = AuthService.register_user(db, user_data)
+        return {"status": "success", "user": user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/signup/user", response_model=dict)
+async def signup_user(user_data: UserSignUp, db: Session = Depends(get_db)):
+    """Register a standard user account (chat-only access)"""
+    try:
+        user_data.role = "client"
+        user = AuthService.register_user(db, user_data)
+        return {"status": "success", "user": user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/signup/admin", response_model=dict)
+async def signup_admin(user_data: UserSignUp, db: Session = Depends(get_db)):
+    """Register an admin account (full system access)"""
+    try:
+        user_data.role = "admin"
         user = AuthService.register_user(db, user_data)
         return {"status": "success", "user": user}
     except ValueError as e:

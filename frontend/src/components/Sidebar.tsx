@@ -1,4 +1,4 @@
-import { MessageSquare, Upload, Shield, BarChart3, Settings, Activity, Network, Bell } from "lucide-react";
+import { MessageSquare, Upload, Shield, BarChart3, Settings, Activity, Network } from "lucide-react";
 
 type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph";
 
@@ -10,15 +10,17 @@ interface SidebarProps {
   unreadAlerts?: number;
 }
 
-const NAV = [
+// Shown to all authenticated users
+const USER_NAV = [
   { id: "chat" as View, label: "Chat", icon: MessageSquare },
+];
+
+// Shown only to admins
+const ADMIN_NAV = [
   { id: "upload" as View, label: "Upload", icon: Upload },
   { id: "analytics" as View, label: "Analytics", icon: BarChart3 },
   { id: "settings" as View, label: "Settings", icon: Settings },
-];
-
-const ADMIN_NAV = [
-  { id: "admin" as View, label: "Admin", icon: Shield },
+  { id: "admin" as View, label: "Admin Panel", icon: Shield },
   { id: "graph" as View, label: "Knowledge Graph", icon: Network },
 ];
 
@@ -40,7 +42,8 @@ export default function Sidebar({ activeView, onViewChange, isOnline, user, unre
 
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-1">
-        {NAV.map(({ id, label, icon: Icon }) => {
+        {/* Chat — available to everyone */}
+        {USER_NAV.map(({ id, label, icon: Icon }) => {
           const active = activeView === id;
           return (
             <button
@@ -63,17 +66,20 @@ export default function Sidebar({ activeView, onViewChange, isOnline, user, unre
             <p className="text-xs text-gray-600 uppercase tracking-widest px-3 mb-1">Admin</p>
             {ADMIN_NAV.map(({ id, label, icon: Icon }) => {
               const active = activeView === id;
+              const isAdminPanel = id === "admin";
               return (
                 <button
                   key={id}
                   onClick={() => onViewChange(id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors relative ${
-                    active ? "bg-red-600/80 text-white" : "text-gray-400 hover:bg-gray-800 hover:text-white"
+                    active
+                      ? isAdminPanel ? "bg-red-600/80 text-white" : "bg-brand-600 text-white"
+                      : "text-gray-400 hover:bg-gray-800 hover:text-white"
                   }`}
                 >
                   <Icon size={17} />
                   <span className="flex-1 text-left">{label}</span>
-                  {id === "admin" && unreadAlerts > 0 && (
+                  {isAdminPanel && unreadAlerts > 0 && (
                     <span className="ml-auto bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">
                       {unreadAlerts > 9 ? "9+" : unreadAlerts}
                     </span>
@@ -93,7 +99,9 @@ export default function Sidebar({ activeView, onViewChange, isOnline, user, unre
             {isOnline ? "API Online" : "API Offline"}
           </span>
         </div>
-        <p className="text-xs text-gray-600">🔗 Hybrid RAG · Graph · Agent</p>
+        <p className="text-xs text-gray-600">
+          {isAdmin ? "🔗 Hybrid RAG · Graph · Agent" : "💬 Chat Mode"}
+        </p>
       </div>
     </aside>
   );

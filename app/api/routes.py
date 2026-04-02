@@ -42,8 +42,13 @@ def ask_question(
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    valid_roles = {"public", "user", "admin", "client"}
-    role = req.role.lower() if req.role.lower() in valid_roles else "user"
+    # Role is always determined by the authenticated user's JWT — never trust client-provided role
+    auth_role = current_user.get("role", "client")
+    # Map backend roles: admin stays admin, client/user stays user, public is unauthenticated
+    if auth_role == "admin":
+        role = "admin"
+    else:
+        role = "user"
 
     # Security check
     try:
@@ -90,16 +95,28 @@ def ask_question(
     if hints:
         confidence = min(confidence + hints.get("confidence_modifier", 0) * 100, 99.0)
 
-    # Build sources
+    # Build sources — admin sees chunks, user sees none
     raw_sources = result.get("sources", [])
-    sources = [
-        SourceItem(
-            name=s.get("name", "Document"),
-            relevance=float(s.get("relevance", 0.8)),
-            chunk=s.get("chunk", "")[:300],
-        )
-        for s in raw_sources[:5]
-    ]
+    if role == "admin":
+        sources = [
+            SourceItem(
+                name=s.get("name", "Document"),
+                relevance=float(s.get("relevance", 0.8)),
+                chunk=s.get("chunk", "")[:500],
+            )
+            for s in raw_sources[:5]
+        ]
+    else:
+        # Users do not see raw document chunks
+        sources = []
+
+    # Enforce summarized response for non-admin users
+    answer = result.get("answer", "")
+    if role != "admin":
+        # Truncate to a clear summary — no raw document exposure
+        words = answer.split()
+        if len(words) > 150:
+            answer = " ".join(words[:150]) + "…"
 
     # Store chat log
     chat_log_id = str(uuid.uuid4())
@@ -109,7 +126,7 @@ def ask_question(
             user_id=current_user["user_id"],
             session_id=session_id,
             question=req.question,
-            answer=result.get("answer", ""),
+            answer=answer,
             query_type=result.get("query_type", "fact"),
             graph_used=result.get("graph_used", False),
             confidence=confidence,
@@ -138,7 +155,7 @@ def ask_question(
         pass
 
     return AskResponse(
-        answer=result.get("answer", ""),
+        answer=answer,
         graph_used=result.get("graph_used", False),
         confidence=round(confidence, 1),
         query_type=result.get("query_type", "fact"),

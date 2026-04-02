@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowRight, Brain, Zap, Lock, BarChart3, GitBranch, Shield, Network, ChevronRight, Check, Star } from "lucide-react";
+import { ArrowRight, Brain, Zap, Lock, BarChart3, GitBranch, Shield, Network, ChevronRight, Check, Star, Send, Bot, Globe, LogIn, Loader2 } from "lucide-react";
 import { NavigateFn } from "../App";
 
 const FEATURES = [
@@ -11,20 +11,115 @@ const FEATURES = [
   { icon: BarChart3, title: "Enterprise Analytics", desc: "Track accuracy, latency, cache hit rates, and per-user engagement with detailed dashboards.", color: "text-orange-400", bg: "bg-orange-400/10 border-orange-400/20" },
 ];
 
-const DEMO_STEPS = [
-  { q: "Which contracts started in 2019 with PSEG?", a: "Contract 511047 with PSEG Power, LLC commenced on November 1, 2019, running through October 31, 2034 for Algonquin Gas Transmission services.", tag: "Graph + Vector", conf: 94 },
-  { q: "Summarize all high-risk agreements", a: "Identified 3 contracts with risk indicators: extended duration (>10 years), multi-party obligations, and variable rate structures. Contract 511047 carries moderate risk due to its 15-year term.", tag: "Multi-hop", conf: 88 },
-];
+// ── Public Demo Chat ──────────────────────────────────────────────────────────
+function PublicDemoChat() {
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<{ role: "user" | "ai"; text: string; conf?: number }[]>([
+    { role: "ai", text: "Hi! I'm CortexFlow AI in public demo mode. Ask me anything about the platform or try a sample question below.", conf: 100 },
+  ]);
+  const [loading, setLoading] = useState(false);
 
-const PLANS = [
-  { name: "Starter", price: "$0", period: "forever", features: ["Up to 50 documents", "Basic RAG search", "Community support", "1 user"], cta: "Start Free", highlight: false },
-  { name: "Pro", price: "$99", period: "per month", features: ["Unlimited documents", "Graph RAG + Multi-hop", "Priority support", "Up to 10 users", "Analytics dashboard", "Role-based access"], cta: "Start Trial", highlight: true },
-  { name: "Enterprise", price: "Custom", period: "contact us", features: ["Dedicated infrastructure", "Custom LLM integration", "SLA & compliance", "Unlimited users", "Full admin controls", "Audit logging"], cta: "Contact Sales", highlight: false },
-];
+  const SAMPLES = [
+    "What is contract number 511047?",
+    "Summarize all high-risk agreements",
+  ];
+
+  async function send(q?: string) {
+    const question = (q ?? input).trim();
+    if (!question || loading) return;
+    setMessages(prev => [...prev, { role: "user", text: question }]);
+    setInput("");
+    setLoading(true);
+    try {
+      const res = await fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, role: "public" }),
+      });
+      const data = await res.json();
+      setMessages(prev => [...prev, { role: "ai", text: data.answer || "No response.", conf: Math.round(data.confidence || 75) }]);
+    } catch {
+      setMessages(prev => [...prev, { role: "ai", text: "Demo is limited — please sign in for full access." }]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+      {/* Terminal bar */}
+      <div className="flex items-center gap-2 px-5 py-3.5 border-b border-gray-800 bg-gray-800/50">
+        <span className="w-3 h-3 rounded-full bg-red-500" />
+        <span className="w-3 h-3 rounded-full bg-yellow-500" />
+        <span className="w-3 h-3 rounded-full bg-green-500" />
+        <span className="ml-4 text-xs text-gray-500">CortexFlow Chat — Public Demo</span>
+        <span className="ml-auto text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full flex items-center gap-1">
+          <Globe size={10} /> Limited Access
+        </span>
+      </div>
+
+      {/* Messages */}
+      <div className="p-5 space-y-4 min-h-[200px] max-h-72 overflow-y-auto">
+        {messages.map((m, i) => (
+          <div key={i} className={`flex gap-3 ${m.role === "user" ? "justify-end" : ""}`}>
+            {m.role === "ai" && (
+              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-brand-600 to-violet-600 flex items-center justify-center shrink-0">
+                <Bot size={13} className="text-white" />
+              </div>
+            )}
+            <div className={`max-w-sm rounded-2xl px-4 py-2.5 text-sm ${m.role === "user" ? "bg-brand-600 text-white rounded-tr-sm" : "bg-gray-800 border border-gray-700 text-gray-100 rounded-tl-sm"}`}>
+              {m.text}
+              {m.conf !== undefined && m.role === "ai" && (
+                <div className="mt-1.5 flex items-center gap-1 text-xs text-yellow-400">
+                  <Star size={10} /> {m.conf}% confidence
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex gap-3">
+            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-brand-600 to-violet-600 flex items-center justify-center">
+              <Bot size={13} className="text-white" />
+            </div>
+            <div className="bg-gray-800 border border-gray-700 rounded-2xl rounded-tl-sm px-4 py-3">
+              <div className="flex gap-1">
+                {[0,1,2].map(i => <span key={i} className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" style={{ animationDelay: `${i*120}ms` }} />)}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Sample questions */}
+      <div className="px-5 pb-3 flex gap-2 flex-wrap">
+        {SAMPLES.map(s => (
+          <button key={s} onClick={() => send(s)} className="text-xs text-gray-400 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg px-3 py-1.5 transition">
+            {s}
+          </button>
+        ))}
+      </div>
+
+      {/* Input */}
+      <div className="px-5 pb-5 flex gap-2">
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && send()}
+          placeholder="Ask a question in demo mode…"
+          className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500 transition"
+        />
+        <button onClick={() => send()} disabled={!input.trim() || loading}
+          className="bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-xl px-4 py-2.5 transition">
+          {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function Landing({ navigate }: { navigate: NavigateFn }) {
-  const [demoIdx, setDemoIdx] = useState(0);
-  const demo = DEMO_STEPS[demoIdx];
+  const [accessMode, setAccessMode] = useState<"public" | "login">("public");
 
   return (
     <div className="bg-gray-950 text-white min-h-screen overflow-x-hidden">
@@ -40,11 +135,10 @@ export default function Landing({ navigate }: { navigate: NavigateFn }) {
           <nav className="hidden md:flex items-center gap-8 text-sm text-gray-400">
             <a href="#features" className="hover:text-white transition">Features</a>
             <a href="#demo" className="hover:text-white transition">Demo</a>
-            <a href="#pricing" className="hover:text-white transition">Pricing</a>
           </nav>
           <div className="flex items-center gap-3">
             <button onClick={() => navigate("login")} className="text-sm text-gray-300 hover:text-white px-4 py-2 transition">Sign in</button>
-            <button onClick={() => navigate("signup")} className="text-sm font-medium bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg transition">
+            <button onClick={() => navigate("signup-user")} className="text-sm font-medium bg-brand-600 hover:bg-brand-500 text-white px-4 py-2 rounded-lg transition">
               Get Started
             </button>
           </div>
@@ -72,11 +166,12 @@ export default function Landing({ navigate }: { navigate: NavigateFn }) {
             CortexFlow combines hybrid vector + graph retrieval, multi-hop reasoning, and enterprise security to deliver precise answers from your documents — at scale.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center mb-16">
-            <button onClick={() => navigate("signup")} className="group flex items-center justify-center gap-2 px-8 py-3.5 bg-brand-600 hover:bg-brand-500 text-white font-semibold rounded-xl transition shadow-lg shadow-brand-600/25">
+            <button onClick={() => navigate("signup-user")} className="group flex items-center justify-center gap-2 px-8 py-3.5 bg-brand-600 hover:bg-brand-500 text-white font-semibold rounded-xl transition shadow-lg shadow-brand-600/25">
               Start for Free <ArrowRight size={18} className="group-hover:translate-x-0.5 transition-transform" />
             </button>
-            <button className="flex items-center justify-center gap-2 px-8 py-3.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 font-semibold rounded-xl transition">
-              Book a Demo
+            <button onClick={() => { const el = document.getElementById("demo"); el?.scrollIntoView({ behavior: "smooth" }); }}
+              className="flex items-center justify-center gap-2 px-8 py-3.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 font-semibold rounded-xl transition">
+              Try Demo
             </button>
           </div>
           <div className="flex items-center justify-center gap-6 text-sm text-gray-500 flex-wrap">
@@ -109,44 +204,52 @@ export default function Landing({ navigate }: { navigate: NavigateFn }) {
         </div>
       </section>
 
-      {/* DEMO */}
+      {/* DEMO — with Access Mode toggle */}
       <section id="demo" className="py-24 px-6 bg-gray-900/50">
         <div className="max-w-4xl mx-auto">
           <div className="text-center mb-12">
             <p className="text-sm font-medium text-brand-400 uppercase tracking-widest mb-3">Interactive Demo</p>
             <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">See CortexFlow in action</h2>
-          </div>
-          <div className="flex gap-2 mb-4 flex-wrap">
-            {DEMO_STEPS.map((d, i) => (
-              <button key={i} onClick={() => setDemoIdx(i)} className={`text-sm px-4 py-2 rounded-lg transition ${i === demoIdx ? "bg-brand-600 text-white" : "bg-gray-800 text-gray-400 hover:text-white"}`}>
-                Example {i + 1}
+            <p className="text-gray-400 mb-8">Try the AI assistant directly — no account required in Public Demo mode.</p>
+
+            {/* Access Mode Toggle */}
+            <div className="inline-flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-xl p-1">
+              <button
+                onClick={() => setAccessMode("public")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${accessMode === "public" ? "bg-brand-600 text-white shadow" : "text-gray-400 hover:text-white"}`}
+              >
+                <Globe size={14} /> Public Demo
               </button>
-            ))}
-          </div>
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
-            <div className="flex items-center gap-2 px-5 py-3.5 border-b border-gray-800 bg-gray-800/50">
-              <span className="w-3 h-3 rounded-full bg-red-500" />
-              <span className="w-3 h-3 rounded-full bg-yellow-500" />
-              <span className="w-3 h-3 rounded-full bg-green-500" />
-              <span className="ml-4 text-xs text-gray-500">CortexFlow Chat — {demo.tag}</span>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="flex gap-3 justify-end">
-                <div className="bg-brand-600 text-white rounded-2xl rounded-tr-sm px-4 py-3 max-w-sm text-sm">{demo.q}</div>
-                <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center shrink-0 text-xs">U</div>
-              </div>
-              <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-brand-600 flex items-center justify-center shrink-0 text-xs">AI</div>
-                <div className="bg-gray-800 border border-gray-700 rounded-2xl rounded-tl-sm px-4 py-3 max-w-xl">
-                  <p className="text-sm text-gray-100 leading-relaxed mb-3">{demo.a}</p>
-                  <div className="flex items-center gap-3 pt-2 border-t border-gray-700">
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-400"><GitBranch size={11} /> {demo.tag}</span>
-                    <span className="flex items-center gap-1.5 text-xs text-yellow-400"><Star size={11} /> {demo.conf}% confidence</span>
-                  </div>
-                </div>
-              </div>
+              <button
+                onClick={() => setAccessMode("login")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${accessMode === "login" ? "bg-brand-600 text-white shadow" : "text-gray-400 hover:text-white"}`}
+              >
+                <LogIn size={14} /> Login Required
+              </button>
             </div>
           </div>
+
+          {accessMode === "public" ? (
+            <PublicDemoChat />
+          ) : (
+            <div className="bg-gray-900 border border-gray-700 rounded-2xl p-12 text-center">
+              <div className="w-16 h-16 rounded-full bg-brand-600/20 border border-brand-500/30 flex items-center justify-center mx-auto mb-6">
+                <Shield size={28} className="text-brand-400" />
+              </div>
+              <h3 className="text-xl font-bold text-white mb-3">Full Access Requires Login</h3>
+              <p className="text-gray-400 mb-8 max-w-sm mx-auto">
+                Sign in to unlock document uploads, full retrieval, analytics, and admin controls.
+              </p>
+              <div className="flex gap-3 justify-center">
+                <button onClick={() => navigate("login")} className="flex items-center gap-2 px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white font-semibold rounded-xl transition">
+                  <LogIn size={16} /> Sign In
+                </button>
+                <button onClick={() => navigate("signup-user")} className="flex items-center gap-2 px-6 py-2.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 font-semibold rounded-xl transition">
+                  Create Account
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -177,49 +280,19 @@ export default function Landing({ navigate }: { navigate: NavigateFn }) {
         </div>
       </section>
 
-      {/* PRICING */}
-      <section id="pricing" className="py-24 px-6 bg-gray-900/50">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-16">
-            <p className="text-sm font-medium text-brand-400 uppercase tracking-widest mb-3">Pricing</p>
-            <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">Simple, transparent pricing</h2>
-            <p className="text-gray-400">Start free, scale as you grow.</p>
-          </div>
-          <div className="grid md:grid-cols-3 gap-6">
-            {PLANS.map(({ name, price, period, features, cta, highlight }) => (
-              <div key={name} className={`relative rounded-2xl p-8 border transition ${highlight ? "bg-brand-600/10 border-brand-500 shadow-xl shadow-brand-600/10" : "bg-gray-900 border-gray-800"}`}>
-                {highlight && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-brand-600 text-white text-xs font-semibold px-4 py-1 rounded-full">Most Popular</div>
-                )}
-                <h3 className="font-bold text-white text-lg mb-1">{name}</h3>
-                <div className="mb-6">
-                  <span className="text-4xl font-extrabold text-white">{price}</span>
-                  <span className="text-gray-400 text-sm ml-2">/ {period}</span>
-                </div>
-                <ul className="space-y-2.5 mb-8">
-                  {features.map(f => (
-                    <li key={f} className="flex items-start gap-2.5 text-sm text-gray-300">
-                      <Check size={14} className="text-emerald-400 mt-0.5 shrink-0" />{f}
-                    </li>
-                  ))}
-                </ul>
-                <button onClick={() => navigate("signup")} className={`w-full py-2.5 rounded-xl font-semibold text-sm transition ${highlight ? "bg-brand-600 hover:bg-brand-500 text-white" : "bg-white/5 hover:bg-white/10 text-white border border-white/10"}`}>
-                  {cta}
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* CTA */}
-      <section className="py-24 px-6">
+      <section className="py-24 px-6 bg-gray-900/50">
         <div className="max-w-3xl mx-auto text-center">
           <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">Ready to transform your knowledge system?</h2>
           <p className="text-gray-400 mb-8">Join teams using CortexFlow to extract intelligence from their documents in minutes.</p>
-          <button onClick={() => navigate("signup")} className="inline-flex items-center gap-2 px-8 py-3.5 bg-brand-600 hover:bg-brand-500 text-white font-semibold rounded-xl transition">
-            Get started for free <ChevronRight size={18} />
-          </button>
+          <div className="flex gap-4 justify-center flex-wrap">
+            <button onClick={() => navigate("signup-user")} className="inline-flex items-center gap-2 px-8 py-3.5 bg-brand-600 hover:bg-brand-500 text-white font-semibold rounded-xl transition">
+              Get started for free <ChevronRight size={18} />
+            </button>
+            <button onClick={() => navigate("signup-admin")} className="inline-flex items-center gap-2 px-8 py-3.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 font-semibold rounded-xl transition">
+              <Shield size={16} /> Register as Admin
+            </button>
+          </div>
         </div>
       </section>
 
