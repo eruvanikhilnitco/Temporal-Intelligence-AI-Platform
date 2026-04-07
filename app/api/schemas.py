@@ -23,6 +23,7 @@ class AskResponse(BaseModel):
     sources: List[SourceItem] = []
     latency_ms: int = 0
     chat_log_id: Optional[str] = None
+    explanation: Optional[Any] = None   # Admin-only: routing trace, confidence scores, tools
 
 
 class UploadResponse(BaseModel):

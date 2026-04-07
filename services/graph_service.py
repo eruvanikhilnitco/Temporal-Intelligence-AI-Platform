@@ -46,6 +46,9 @@ class _GraphBackend(ABC):
     def get_all_data(self, limit: int) -> Dict: ...
 
     @abstractmethod
+    def multi_hop_query(self, entity_name: str, max_hops: int) -> List[Dict]: ...
+
+    @abstractmethod
     def close(self) -> None: ...
 
     @property
@@ -147,6 +150,36 @@ class _Neo4jBackend(_GraphBackend):
             ]
         except Exception as e:
             logger.error("[Neo4j] search_entities failed: %s", e)
+            return []
+
+    def multi_hop_query(self, entity_name: str, max_hops: int = 2) -> List[Dict]:
+        """
+        Variable-length Cypher path query — finds all nodes reachable within
+        max_hops relationships from entity_name.
+        """
+        cypher = (
+            f"MATCH path = (start)-[*1..{max_hops}]->(end) "
+            "WHERE start.name = $name "
+            "RETURN "
+            "  [n IN nodes(path) | n.name]   AS node_path, "
+            "  [r IN relationships(path) | type(r)] AS rel_path, "
+            "  end.name AS terminal "
+            "LIMIT 30"
+        )
+        try:
+            with self._driver.session() as s:
+                records = s.run(cypher, name=entity_name).data()
+            results = []
+            for r in records:
+                results.append({
+                    "path": " → ".join(r.get("node_path") or []),
+                    "relations": r.get("rel_path", []),
+                    "terminal": r.get("terminal", ""),
+                    "hops": len(r.get("rel_path", [])),
+                })
+            return results
+        except Exception as e:
+            logger.error("[Neo4j] multi_hop_query failed: %s", e)
             return []
 
     def get_all_data(self, limit: int = 200) -> Dict:
@@ -300,6 +333,39 @@ class _SQLiteBackend(_GraphBackend):
         except Exception as e:
             logger.error("[SQLite] search_entities failed: %s", e)
             return []
+
+    def multi_hop_query(self, entity_name: str, max_hops: int = 2) -> List[Dict]:
+        """BFS up to max_hops levels in SQLite graph."""
+        visited: set = {entity_name}
+        frontier: List[str] = [entity_name]
+        results: List[Dict] = []
+        for hop in range(1, max_hops + 1):
+            next_frontier: List[str] = []
+            for node in frontier:
+                try:
+                    with _sqlite_conn() as c:
+                        rows = c.execute(
+                            "SELECT from_node, relation, to_node FROM graph_edges "
+                            "WHERE from_node = ? OR to_node = ? LIMIT 20",
+                            (node, node),
+                        ).fetchall()
+                    for r in rows:
+                        neighbor = r["to_node"] if r["from_node"] == node else r["from_node"]
+                        if neighbor not in visited:
+                            visited.add(neighbor)
+                            next_frontier.append(neighbor)
+                            results.append({
+                                "path": f"{node} → {neighbor}",
+                                "relations": [r["relation"]],
+                                "terminal": neighbor,
+                                "hops": hop,
+                            })
+                except Exception as e:
+                    logger.error("[SQLite] multi_hop_query hop %d failed: %s", hop, e)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return results[:30]
 
     def get_all_data(self, limit: int = 200) -> Dict:
         try:
@@ -518,6 +584,15 @@ class GraphService:
                 other = rel["to"] if rel["from"] == doc_name else rel["from"]
                 results.append({"document": other, "relation": rel["relation"], "source": rel["source"]})
         return results
+
+    def multi_hop_query(self, entity_name: str, max_hops: int = 2) -> List[Dict]:
+        """
+        Traverse the graph up to `max_hops` away from `entity_name`.
+        Neo4j: runs Cypher variable-length path query.
+        SQLite: performs iterative BFS up to max_hops depth.
+        Returns flat list of {path, relations, source} dicts.
+        """
+        return self._backend.multi_hop_query(entity_name, max_hops)
 
     def store_document_metadata(self, doc_name: str, metadata: Dict) -> bool:
         """Store extracted metadata as graph nodes connected to the document node."""

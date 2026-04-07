@@ -41,7 +41,18 @@ def startup():
         log_critical("Startup", "Database initialisation failed", exc=e)
     _seed_default_rules()
     _warmup_rag_background()
-    logging.getLogger(__name__).info("[Startup] CortexFlow v4.0 started — error log: logs/error_log.jsonl")
+    _start_ingest_queue()
+    logging.getLogger(__name__).info("[Startup] CortexFlow v4.1 started — error log: logs/error_log.jsonl")
+
+
+def _start_ingest_queue():
+    """Start the background document ingest queue."""
+    try:
+        from services.ingest_queue import get_ingest_queue
+        get_ingest_queue()  # Initialises and starts the worker thread
+        logging.getLogger(__name__).info("[Startup] Ingest queue worker started")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[Startup] Ingest queue failed to start: {e}")
 
 
 def _warmup_rag_background():

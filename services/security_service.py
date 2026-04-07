@@ -175,3 +175,87 @@ def compute_user_risk(suspicious_count: int, total_queries: int) -> Tuple[int, s
         return 35, "medium"
     else:
         return 5, "low"
+
+
+# ── PII masking (extension — new capability) ──────────────────────────────────
+
+_PII_PATTERNS = [
+    (re.compile(r"\b\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b"), "SSN"),
+    (re.compile(
+        r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|"
+        r"3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"
+    ), "CREDIT_CARD"),
+    (re.compile(r"\b[A-Z]{1,2}\d{6,9}\b"), "PASSPORT"),
+    (re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "IP_ADDRESS"),
+    (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), "EMAIL"),
+    (re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), "PHONE"),
+]
+
+# Attack severity map (0-10) for patterns already compiled above
+_ATTACK_SEVERITY = {
+    "prompt_injection": 10.0,
+    "data_leakage": 8.0,
+    "scraping": 5.0,
+    "rate_limit": 4.0,
+}
+
+
+def mask_pii(text: str) -> tuple:
+    """
+    Replace PII in text with [TYPE_REDACTED] placeholders.
+    Returns (masked_text, list_of_pii_types_found).
+    Safe to call on any string before logging or storing.
+    """
+    found = []
+    for pattern, pii_type in _PII_PATTERNS:
+        if pattern.search(text):
+            found.append(pii_type)
+            text = pattern.sub(f"[{pii_type}_REDACTED]", text)
+    return text, found
+
+
+def attack_score(query: str) -> tuple:
+    """
+    Compute a 0-10 threat score for a query.
+    Returns (score, [attack_type_labels]).
+    0 = clean, 10 = critical attack pattern.
+    """
+    detected = []
+    max_score = 0.0
+    for pattern in _COMPILED_INJECTION:
+        if pattern.search(query):
+            detected.append("PROMPT_INJECTION")
+            max_score = max(max_score, _ATTACK_SEVERITY["prompt_injection"])
+    for pattern in _COMPILED_LEAKAGE:
+        if pattern.search(query):
+            detected.append("DATA_LEAKAGE")
+            max_score = max(max_score, _ATTACK_SEVERITY["data_leakage"])
+    for pattern in _COMPILED_SCRAPING:
+        if pattern.search(query):
+            detected.append("SCRAPING")
+            max_score = max(max_score, _ATTACK_SEVERITY["scraping"])
+    return max_score, list(set(detected))
+
+
+def full_security_analysis(query: str, user_id: str, user_role: str) -> dict:
+    """
+    Combined analysis: threat detection + PII masking + attack scoring.
+    Returns a dict suitable for logging and gating decisions.
+    """
+    threat = analyze_query(query, user_id, user_role)
+    score, attacks = attack_score(query)
+    masked_q, pii_found = mask_pii(query)
+    risk_level = "HIGH" if score >= 7 or threat.severity == "high" else \
+                 "MEDIUM" if score >= 3 or pii_found else "LOW"
+    return {
+        "is_threat": threat.is_threat,
+        "threat_type": threat.threat_type,
+        "threat_severity": threat.severity,
+        "attack_score": score,
+        "attack_types": attacks,
+        "pii_found": pii_found,
+        "masked_query": masked_q,
+        "risk_level": risk_level,
+        "should_block": threat.is_threat and threat.severity == "high",
+        "should_warn": risk_level == "MEDIUM",
+    }

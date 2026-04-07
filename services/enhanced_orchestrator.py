@@ -207,6 +207,14 @@ class EnhancedAgentState(AgentState):
     is_cross_doc: bool = False
     annotated_chunks: List[Dict] = field(default_factory=list)
     mentioned_docs: List[str] = field(default_factory=list)
+    # Confidence routing
+    rag_confidence_score: float = 0.0
+    graph_confidence_score: float = 0.0
+    routing_decision: str = "rag"   # "rag" | "graph" | "hybrid"
+    # Explainability
+    reasoning_trace: List[str] = field(default_factory=list)
+    # Weighted fusion scores
+    fused_chunks: List[Dict] = field(default_factory=list)
 
 
 # ── Enhanced Orchestrator ─────────────────────────────────────────────────────
@@ -247,12 +255,140 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
 
         self._cross_tool = CrossDocumentTool(self._doc_reader, self._annotated_searcher)
 
+    # ── Confidence-based routing ──────────────────────────────────────────────
+
+    def _rag_confidence(self, query: str, user_role: str) -> float:
+        """
+        Quick Qdrant top-1 search score (cosine similarity, 0-1).
+        Measures how well the vector store can answer this query.
+        """
+        try:
+            vector = self.rag.embedder.embed(query)
+            results = self.rag.client.query_points(
+                collection_name=self.rag.collection_name,
+                query=vector,
+                limit=1,
+                query_filter={"must": [{"key": "access_roles", "match": {"value": user_role}}]},
+            )
+            if results.points:
+                return float(getattr(results.points[0], "score", 0.0))
+        except Exception as e:
+            logger.debug("[ConfidenceRouter] RAG confidence probe failed: %s", e)
+        return 0.0
+
+    def _graph_confidence(self, query: str) -> float:
+        """
+        Entity-match ratio: what fraction of query entities exist in the graph?
+        Returns a 0-1 score normalised by the number of entities extracted.
+        """
+        try:
+            if not self.graph_tool:
+                return 0.0
+            entities = self.graph_tool.graph.extract_entities(query)
+            all_names = (
+                [f"Contract {c}" for c in entities.get("contracts", [])]
+                + entities.get("organizations", [])
+                + entities.get("dates", [])[:2]
+            )
+            if not all_names:
+                # No structured entities — try keyword search
+                results = self.graph_tool.graph.search_entities(query.split()[0])
+                return 0.4 if results else 0.0
+            hits = sum(
+                1 for name in all_names
+                if self.graph_tool.graph.query_entity(name)
+            )
+            return min(hits / len(all_names), 1.0)
+        except Exception as e:
+            logger.debug("[ConfidenceRouter] Graph confidence probe failed: %s", e)
+        return 0.0
+
+    def _route_by_confidence(
+        self, query: str, user_role: str, state: "EnhancedAgentState"
+    ) -> str:
+        """
+        Compare RAG and Graph confidence scores and choose routing.
+        Returns 'rag' | 'graph' | 'hybrid'.
+        Records scores and decision in state for explainability.
+        """
+        rag_score = self._rag_confidence(query, user_role)
+        graph_score = self._graph_confidence(query)
+
+        state.rag_confidence_score = round(rag_score, 3)
+        state.graph_confidence_score = round(graph_score, 3)
+        state.reasoning_trace.append(
+            f"Confidence probe → RAG:{rag_score:.3f}  Graph:{graph_score:.3f}"
+        )
+
+        margin = 0.15  # Minimum gap to prefer one over the other
+        if graph_score > rag_score + margin:
+            decision = "graph"
+        elif rag_score > graph_score + margin:
+            decision = "rag"
+        else:
+            decision = "hybrid"
+
+        state.routing_decision = decision
+        state.reasoning_trace.append(f"Routing decision: {decision.upper()}")
+        logger.info(
+            "[ConfidenceRouter] RAG=%.3f Graph=%.3f → %s",
+            rag_score, graph_score, decision,
+        )
+        return decision
+
+    # ── Weighted fusion ───────────────────────────────────────────────────────
+
+    def _weighted_fusion(
+        self,
+        rag_chunks: List[Dict],
+        graph_relations: List[Dict],
+        rag_weight: float = 0.7,
+        graph_weight: float = 0.3,
+    ) -> List[Dict]:
+        """
+        Merge RAG chunks and graph relations into a single ranked list.
+        Score = weight * raw_score.  Deduplicates by first 80 chars of text.
+        """
+        combined: List[Dict] = []
+
+        for chunk in rag_chunks:
+            combined.append({
+                "text": chunk.get("text", chunk) if isinstance(chunk, dict) else chunk,
+                "file_name": chunk.get("file_name", "Document") if isinstance(chunk, dict) else "Document",
+                "score": float(chunk.get("score", 0.8) if isinstance(chunk, dict) else 0.8) * rag_weight,
+                "origin": "rag",
+            })
+
+        for rel in graph_relations[:10]:
+            text = f"{rel.get('from', '')} —[{rel.get('relation', '')}]→ {rel.get('to', '')}"
+            combined.append({
+                "text": text,
+                "file_name": rel.get("source", "graph"),
+                "score": 0.6 * graph_weight,
+                "origin": "graph",
+            })
+
+        # Sort descending by weighted score
+        combined.sort(key=lambda x: x["score"], reverse=True)
+
+        # Deduplicate by text prefix
+        seen: set = set()
+        deduped: List[Dict] = []
+        for item in combined:
+            key = item["text"][:80]
+            if key not in seen:
+                seen.add(key)
+                deduped.append(item)
+
+        return deduped
+
     # ── Overridden nodes ──────────────────────────────────────────────────────
 
     def _node_classify(self, state: AgentState) -> AgentState:
         """Extend base classify: detect doc-read and cross-doc intents."""
         state = super()._node_classify(state)
         state = self._ensure_enhanced(state)
+        state.reasoning_trace.append(f"Query type classified as: {state.query_type}")
 
         # Doc-read detection — call parse_query unconditionally.
         # parse_query is cheap and handles ALL verbs (retrieve, get, fetch, show,
@@ -370,8 +506,53 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
                     state.vector_results = [c["text"] for c in state.annotated_chunks[:8]]
             return state
 
-        # ── Path 3: standard retrieval ────────────────────────────────────────
-        return super()._node_retrieve(state)
+        # ── Path 3: confidence-based routing ─────────────────────────────────
+        decision = self._route_by_confidence(state.query, state.user_role, state)
+
+        if decision == "graph" and self.graph_tool:
+            # Graph-primary retrieval
+            graph_result = self.graph_tool.run(state.query)
+            if graph_result.success:
+                state.graph_context = graph_result.data.get("context", "")
+                state.graph_entities = graph_result.data.get("entities", {})
+                state.tools_used.append("GraphQueryTool[primary]")
+                state.reasoning_trace.append("Graph-primary retrieval executed")
+                # Still get some RAG context for grounding
+                doc_result = self.doc_tool.run(state.query, state.user_role)
+                if doc_result.success:
+                    state.vector_results = doc_result.data[:3]
+
+        elif decision == "hybrid":
+            # Weighted fusion: run both and merge
+            doc_result = self.doc_tool.run(state.query, state.user_role)
+            rag_chunks: List[Dict] = []
+            if doc_result.success and self._annotated_searcher:
+                ann = self._annotated_searcher.run(state.query, state.user_role, top_k=8)
+                rag_chunks = ann.data if ann.success else []
+            elif doc_result.success:
+                rag_chunks = [{"text": t, "score": 0.8} for t in (doc_result.data or [])]
+
+            graph_rels: List[Dict] = []
+            if self.graph_tool:
+                g_result = self.graph_tool.run(state.query)
+                if g_result.success:
+                    state.graph_context = g_result.data.get("context", "")
+                    graph_rels = g_result.data.get("relations", [])
+
+            fused = self._weighted_fusion(rag_chunks, graph_rels)
+            state.fused_chunks = fused
+            state.vector_results = [c["text"] for c in fused[:6]]
+            state.tools_used.extend(["DocumentSearchTool[hybrid]", "GraphQueryTool[hybrid]"])
+            state.reasoning_trace.append(
+                f"Hybrid fusion: {len(rag_chunks)} RAG + {len(graph_rels)} graph → {len(fused)} merged"
+            )
+
+        else:
+            # RAG-primary (default)
+            state = super()._node_retrieve(state)
+            state.reasoning_trace.append("RAG-primary retrieval executed")
+
+        return state
 
     def _node_fuse_context(self, state: AgentState) -> AgentState:
         """
@@ -441,37 +622,63 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
         if state.needs_doc_read and state.doc_read_result:
             state.answer = state.doc_read_result
             state.confidence = 99.0
+            state.reasoning_trace.append("Verbatim document read — LLM bypassed")
             return state
 
         if state.is_cross_doc and state.final_context:
-            comparison_prompt = (
-                f"{state.query}\n\n"
-                "Instructions: Use ONLY the document contexts provided. "
-                "Structure your answer clearly by document. "
-                "When comparing, explicitly state which document each point comes from. "
-                "If information exists in multiple documents, highlight agreements and contradictions."
+            # Structured multi-document comparison prompt
+            doc_names = list({c.get("file_name", "Doc") for c in state.annotated_chunks})
+            doc_section = "\n".join(f"- {d}" for d in doc_names) if doc_names else ""
+            structured_prompt = (
+                f"You are a precise document analyst. Answer ONLY from the provided document contexts.\n\n"
+                f"Documents being compared:\n{doc_section}\n\n"
+                f"{state.final_context}\n\n"
+                f"Question: {state.query}\n\n"
+                f"Provide your answer in this structure:\n"
+                f"**Similarities:** (what the documents agree on)\n"
+                f"**Differences:** (what differs between documents)\n"
+                f"**Conclusion:** (direct answer to the question)\n\n"
+                f"Cite the document name for every claim."
             )
             original_query = state.query
-            state.query = comparison_prompt
+            state.query = structured_prompt
             state = super()._node_generate(state)
             state.query = original_query
+            state.reasoning_trace.append(
+                f"Structured multi-doc comparison across {len(doc_names)} document(s)"
+            )
             return state
 
-        return super()._node_generate(state)
+        state = super()._node_generate(state)
+        state.reasoning_trace.append(
+            f"LLM generation with {len(state.vector_results)} context chunks"
+        )
+        return state
 
     def _node_postprocess(self, state: AgentState) -> AgentState:
         state = self._ensure_enhanced(state)
 
         if state.needs_doc_read and state.doc_read_result:
             state.confidence = 99.0
+            state.reasoning_trace.append("Confidence: 99% (verbatim read — no inference)")
             return state
 
         state = super()._node_postprocess(state)
+
+        # Boost confidence for hybrid and graph routing
+        if state.routing_decision == "hybrid":
+            state.confidence = min(state.confidence + 8.0, 97.0)
+        if state.routing_decision == "graph":
+            state.confidence = min(state.confidence + 5.0, 97.0)
 
         if state.is_cross_doc and state.annotated_chunks:
             doc_count = len({c.get("file_name") for c in state.annotated_chunks})
             state.confidence = min(state.confidence + doc_count * 3.0, 97.0)
 
+        state.reasoning_trace.append(
+            f"Final confidence: {state.confidence}% | Route: {state.routing_decision} | "
+            f"Tools: {', '.join(state.tools_used)}"
+        )
         return state
 
     # ── Helpers ───────────────────────────────────────────────────────────────

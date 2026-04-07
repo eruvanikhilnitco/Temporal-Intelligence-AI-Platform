@@ -144,9 +144,60 @@ class MetadataExtractor:
     """
     Extracts domain, doc_type, and sensitivity metadata from raw document text.
 
-    Designed to be stateless and independently instantiated.
+    Strategy (in priority order):
+      1. LLM classification — Cohere/OpenAI classifies first 1000 chars (most accurate)
+      2. Keyword TF scoring — fast, deterministic fallback (no LLM call)
+      3. Entity counting    — regex entity signals boost domain score
+      4. Structural cues    — filename and structure hints
+
     Open for extension: add profiles to DOMAIN_PROFILES, no code changes needed.
     """
+
+    # ── LLM-based classification ───────────────────────────────────────────────
+
+    @staticmethod
+    def _llm_classify(text: str, filename: str = "") -> Optional[Dict]:
+        """
+        Ask the LLM to classify the document. Returns dict or None if unavailable.
+        Uses first 1200 chars (fast, cheap) — not the full document.
+        """
+        snippet = text[:1200].strip()
+        valid_domains = ", ".join(DOMAIN_PROFILES.keys()) + ", general"
+
+        prompt = (
+            f"Classify this document excerpt and filename. "
+            f"Reply with ONLY a JSON object — no explanation.\n\n"
+            f'Filename: "{filename}"\n\n'
+            f"Excerpt:\n{snippet}\n\n"
+            f"Return exactly this JSON structure:\n"
+            f'{{"domain": "<one of: {valid_domains}>", '
+            f'"doc_type": "<contract|report|policy|invoice|letter|manual|brief|review|document>", '
+            f'"sensitivity": "<high|medium|low>", '
+            f'"confidence": <float 0.0-1.0>}}'
+        )
+        try:
+            import os, json as _json
+            cohere_key = os.getenv("COHERE_API_KEY")
+            if cohere_key:
+                import cohere as _cohere
+                client = _cohere.Client(cohere_key)
+                resp = client.chat(
+                    model="command-r7b-12-2024",
+                    message=prompt,
+                    temperature=0.0,
+                )
+                raw = resp.text.strip()
+                # Strip markdown fences if present
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1].lstrip("json").strip()
+                result = _json.loads(raw)
+                # Validate keys
+                if all(k in result for k in ("domain", "doc_type", "sensitivity")):
+                    result["source"] = "llm"
+                    return result
+        except Exception as e:
+            logger.debug("[MetadataExtractor] LLM classification failed: %s", e)
+        return None
 
     def extract(self, text: str, filename: str = "") -> Dict:
         """
@@ -161,7 +212,27 @@ class MetadataExtractor:
         text_lower = text.lower()
         fname_lower = filename.lower()
 
-        # Step 1: Entity-based signal
+        # Step 0: LLM classification (most accurate — skip on very short texts)
+        if len(text.strip()) > 200:
+            llm_result = self._llm_classify(text, filename)
+            if llm_result:
+                # LLM succeeded — enrich with keyword evidence and return
+                entity_counts = self._count_entities(text)
+                _, kw_hits = self._score_keywords(
+                    text_lower,
+                    DOMAIN_PROFILES.get(llm_result.get("domain", "general"), {}).get("keywords", []),
+                )
+                return {
+                    "domain": llm_result.get("domain", "general"),
+                    "doc_type": llm_result.get("doc_type", "document"),
+                    "sensitivity": llm_result.get("sensitivity", "low"),
+                    "keywords_found": kw_hits[:10],
+                    "entity_counts": entity_counts,
+                    "confidence": float(llm_result.get("confidence", 0.8)),
+                    "classification_source": "llm",
+                }
+
+        # Step 1: Entity-based signal (keyword fallback path)
         entity_counts = self._count_entities(text)
 
         # Step 2: Keyword scoring across all domain profiles
@@ -208,6 +279,7 @@ class MetadataExtractor:
             "keywords_found": keyword_hits.get(best_domain, [])[:10],
             "entity_counts": entity_counts,
             "confidence": round(confidence, 2),
+            "classification_source": "keyword",
         }
 
     # ── Private helpers ───────────────────────────────────────────────────────

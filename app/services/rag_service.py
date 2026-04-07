@@ -86,6 +86,11 @@ def ask_rag_full(question: str, role: str, session_id: str = "") -> dict:
                 "sources": state.sources,
                 "cache_hit": state.cache_hit,
                 "tools_used": state.tools_used,
+                # Explainability fields (EnhancedAgentState only)
+                "routing_decision": getattr(state, "routing_decision", "rag"),
+                "rag_confidence_score": getattr(state, "rag_confidence_score", 0.0),
+                "graph_confidence_score": getattr(state, "graph_confidence_score", 0.0),
+                "reasoning_trace": getattr(state, "reasoning_trace", []),
             }
         except Exception as e:
             log_error("RAGService", "Orchestrator query failed", exc=e,
@@ -155,19 +160,22 @@ def ingest_file(file_path: str) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"[ingest] Metadata extraction failed: {e}")
 
+    # Filter empty chunks
+    valid_chunks = [c for c in chunks if c.strip()]
+
+    # Batch embedding — single model.encode() call, much faster than loop
+    vectors = rag.embedder.embed_batch(valid_chunks)
+
     points = []
-    for chunk in chunks:
-        if not chunk.strip():
-            continue
-        vector = rag.embedder.embed(chunk)
+    for chunk, vector in zip(valid_chunks, vectors):
         payload = {
             "text": chunk,
             "file_name": fname,
             "access_roles": access_roles,
-            # Metadata enrichment — stored per chunk for filtered retrieval
             "domain": metadata.get("domain", "general"),
             "doc_type": metadata.get("doc_type", "document"),
             "sensitivity": metadata.get("sensitivity", "low"),
+            "classification_source": metadata.get("classification_source", "keyword"),
         }
         points.append(
             PointStruct(
@@ -179,7 +187,7 @@ def ingest_file(file_path: str) -> Optional[dict]:
 
     if points:
         rag.client.upsert(collection_name=rag.collection_name, points=points)
-        logger.info(f"Stored {len(points)} vectors for {fname}")
+        logger.info(f"Stored {len(points)} vectors for {fname} (batch embedding)")
 
     entities = rag.graph_rag.ingest_document(text, fname)
     logger.info(f"Graph ingestion complete for {fname}: {entities}")

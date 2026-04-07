@@ -51,25 +51,38 @@ def ask_question(
     else:
         role = "user"
 
-    # Security check
+    # Full security analysis: threat detection + PII masking + attack scoring
+    security_info: dict = {}
     try:
-        from services.security_service import analyze_query, compute_user_risk
-        threat = analyze_query(req.question, current_user["user_id"], role)
-        if threat.is_threat:
-            # Log security event
+        from services.security_service import full_security_analysis
+        security_info = full_security_analysis(req.question, current_user["user_id"], role)
+        if security_info.get("should_block"):
             _log_security_event(
                 db=db,
                 user_id=current_user["user_id"],
                 email=current_user.get("email", ""),
-                event_type=threat.threat_type,
-                severity=threat.severity,
-                description=threat.description,
+                event_type=security_info.get("threat_type", "attack"),
+                severity="high",
+                description=str(security_info.get("attack_types", [])),
                 query=req.question,
             )
-            # Update user risk score
             _update_user_risk(db, current_user["user_id"])
-            if threat.severity == "high":
-                raise HTTPException(status_code=400, detail=f"Query blocked: {threat.description}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query blocked (attack score {security_info.get('attack_score', 0):.0f}/10): "
+                       f"{', '.join(security_info.get('attack_types', ['policy violation']))}",
+            )
+        elif security_info.get("is_threat"):
+            _log_security_event(
+                db=db,
+                user_id=current_user["user_id"],
+                email=current_user.get("email", ""),
+                event_type=security_info.get("threat_type", "suspicious"),
+                severity="medium",
+                description=str(security_info.get("threat_severity")),
+                query=req.question,
+            )
+            _update_user_risk(db, current_user["user_id"])
     except ImportError:
         pass
 
@@ -155,6 +168,22 @@ def ask_question(
     except Exception:
         pass
 
+    # Explainability — admin gets full reasoning trace
+    explanation: Optional[dict] = None
+    if role == "admin":
+        explanation = {
+            "routing": result.get("routing_decision", "rag"),
+            "rag_confidence": result.get("rag_confidence_score", 0.0),
+            "graph_confidence": result.get("graph_confidence_score", 0.0),
+            "reasoning_trace": result.get("reasoning_trace", []),
+            "tools_used": result.get("tools_used", []),
+            "security": {
+                "risk_level": security_info.get("risk_level", "LOW"),
+                "pii_found": security_info.get("pii_found", []),
+                "attack_score": security_info.get("attack_score", 0),
+            },
+        }
+
     return AskResponse(
         answer=answer,
         graph_used=result.get("graph_used", False),
@@ -163,6 +192,7 @@ def ask_question(
         sources=sources,
         latency_ms=latency_ms,
         chat_log_id=chat_log_id,
+        explanation=explanation,
     )
 
 
@@ -400,6 +430,48 @@ async def upload_folder(
         "skipped": skipped_count,
         "files": results,
     }
+
+
+# ── Ingest Queue endpoints ────────────────────────────────────────────────────
+
+@router.post("/upload/async")
+async def upload_async(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_client),
+):
+    """
+    Non-blocking upload — saves the file, queues ingestion in background,
+    returns a job_id immediately. Poll /upload/status/{job_id} for result.
+    """
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type '{suffix}'")
+
+    dest = UPLOAD_DIR / file.filename
+    try:
+        with dest.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+
+    from services.ingest_queue import get_ingest_queue
+    q = get_ingest_queue()
+    job_id = q.submit(str(dest), original_filename=file.filename)
+    return {"status": "queued", "job_id": job_id, "filename": file.filename}
+
+
+@router.get("/upload/status/{job_id}")
+def upload_status(job_id: str, current_user: dict = Depends(require_client)):
+    """Poll the status of an async ingestion job."""
+    from services.ingest_queue import get_ingest_queue
+    return get_ingest_queue().status(job_id)
+
+
+@router.get("/system/reliability")
+def system_reliability(current_user: dict = Depends(require_client)):
+    """Return circuit breaker states for all external services."""
+    from services.reliability import all_breaker_statuses
+    return all_breaker_statuses()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
