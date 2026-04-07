@@ -356,84 +356,108 @@ class SharePointRequest(BaseModel):
     library_path: str = "Shared Documents"
 
 
-@router.post("/sharepoint/ingest")
-def sharepoint_ingest(
-    req: SharePointRequest,
-    current_user: dict = Depends(require_admin),
-):
+def _ingest_via_office365_client(req: "SharePointRequest") -> dict:
     """
-    Connect to SharePoint, recursively traverse all nested folders,
-    download every file, and ingest each through the RAG pipeline.
-    Returns a summary of ingested files and any errors.
+    Primary SharePoint strategy using Office365-REST-Python-Client.
+    Handles SharePoint Online (Office 365) with username/password credentials.
+    Traverses folders recursively and ingests all supported files.
     """
+    from office365.runtime.auth.user_credential import UserCredential
+    from office365.sharepoint.client_context import ClientContext
     from app.services.rag_service import ingest_file
 
-    site = req.site_url.rstrip("/")
-    auth = (req.username, req.password)
-    headers = {"Accept": "application/json;odata=verbose"}
+    SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
+
+    # Parse the site URL — extract just the base origin + site path
+    site_url = req.site_url.rstrip("/")
+    # Remove page/query fragments — keep only scheme + host + /sites/xxx part
+    import re as _re
+    site_match = _re.match(r"(https?://[^/]+(?:/sites/[^/?#]*)?)", site_url)
+    clean_site = site_match.group(1) if site_match else site_url
+    logger.info(f"[SharePoint] Connecting to: {clean_site}")
+
+    credentials = UserCredential(req.username, req.password)
+    ctx = ClientContext(clean_site).with_credentials(credentials)
 
     ingested = []
     errors = []
 
-    def get_folder_files(folder_url: str):
-        """Recursively get all files in a folder and its subfolders."""
-        # Get files in current folder
-        files_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Files"
+    def process_folder(folder_url: str):
+        """Recursively process a folder — yields (file_obj, relative_path) tuples."""
         try:
-            res = http_requests.get(files_url, auth=auth, headers=headers, timeout=30)
-            if res.ok:
-                for item in res.json().get("d", {}).get("results", []):
-                    file_url = item.get("ServerRelativeUrl", "")
-                    file_name = item.get("Name", "")
-                    if file_url:
-                        yield file_url, file_name
+            folder = ctx.web.get_folder_by_server_relative_url(folder_url)
+            ctx.load(folder)
+            ctx.execute_query()
         except Exception as e:
-            logger.warning(f"[SharePoint] Failed to list files in {folder_url}: {e}")
+            logger.warning(f"[SharePoint] Cannot access folder '{folder_url}': {e}")
+            return
+
+        # Process files in this folder
+        try:
+            files = folder.files
+            ctx.load(files)
+            ctx.execute_query()
+            for f in files:
+                yield f, folder_url
+        except Exception as e:
+            logger.warning(f"[SharePoint] Cannot list files in '{folder_url}': {e}")
 
         # Recurse into subfolders
-        folders_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Folders"
         try:
-            res = http_requests.get(folders_url, auth=auth, headers=headers, timeout=30)
-            if res.ok:
-                for subfolder in res.json().get("d", {}).get("results", []):
-                    sub_url = subfolder.get("ServerRelativeUrl", "")
-                    sub_name = subfolder.get("Name", "")
-                    if sub_url and sub_name not in ("Forms",):
-                        yield from get_folder_files(sub_url)
+            subfolders = folder.folders
+            ctx.load(subfolders)
+            ctx.execute_query()
+            for sf in subfolders:
+                sf_name = sf.properties.get("Name", "")
+                if sf_name in ("Forms", "_private", "Attachments"):
+                    continue
+                sf_url = sf.properties.get("ServerRelativeUrl", "")
+                if sf_url:
+                    yield from process_folder(sf_url)
         except Exception as e:
-            logger.warning(f"[SharePoint] Failed to list folders in {folder_url}: {e}")
+            logger.warning(f"[SharePoint] Cannot list subfolders in '{folder_url}': {e}")
 
-    # Build initial folder server-relative URL
+    # Build server-relative path for the target library
     try:
-        site_path = site.split("/sites/")[-1] if "/sites/" in site else ""
-        base_folder = f"/sites/{site_path}/{req.library_path}" if site_path else f"/{req.library_path}"
+        from urllib.parse import urlparse
+        parsed = urlparse(clean_site)
+        site_relative = parsed.path.rstrip("/")
+        library_relative = f"{site_relative}/{req.library_path}"
+        logger.info(f"[SharePoint] Target folder: {library_relative}")
     except Exception:
-        base_folder = f"/{req.library_path}"
+        library_relative = f"/{req.library_path}"
 
-    for file_rel_url, file_name in get_folder_files(base_folder):
-        download_url = f"{site}/_api/web/GetFileByServerRelativeUrl('{file_rel_url}')/$value"
+    for file_obj, parent_url in process_folder(library_relative):
+        file_name = file_obj.properties.get("Name", "")
+        file_url = file_obj.properties.get("ServerRelativeUrl", "")
+        ext = os.path.splitext(file_name)[1].lower()
+
+        if ext not in SUPPORTED_EXTS:
+            logger.debug(f"[SharePoint] Skipping unsupported file: {file_name}")
+            continue
+
         try:
-            dl = http_requests.get(download_url, auth=auth, timeout=60)
-            if not dl.ok:
-                errors.append({"file": file_name, "error": f"Download failed: HTTP {dl.status_code}"})
-                continue
-
-            suffix = os.path.splitext(file_name)[1] or ".bin"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(dl.content)
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
                 tmp_path = tmp.name
+
+            # Download file content via server-relative URL
+            with open(tmp_path, "wb") as fh:
+                ctx.web.get_file_by_server_relative_url(file_url).download(fh).execute_query()
 
             try:
                 entities = ingest_file(tmp_path)
-                ingested.append({"file": file_name, "entities": entities})
+                ingested.append({"file": file_name, "path": parent_url, "entities": entities})
                 logger.info(f"[SharePoint] Ingested: {file_name}")
             except Exception as e:
-                errors.append({"file": file_name, "error": str(e)})
+                errors.append({"file": file_name, "error": str(e)[:200]})
             finally:
-                os.unlink(tmp_path)
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
         except Exception as e:
-            errors.append({"file": file_name, "error": str(e)})
+            errors.append({"file": file_name, "error": f"Download failed: {str(e)[:200]}"})
 
     return {
         "status": "complete",
@@ -441,7 +465,356 @@ def sharepoint_ingest(
         "errors": len(errors),
         "files": ingested,
         "error_details": errors,
+        "auth_method": "Office365-REST-Python-Client",
     }
+
+
+def _ingest_via_rest_api(req: "SharePointRequest") -> dict:
+    """
+    Fallback SharePoint strategy using direct REST API calls with cookie-based auth.
+    Works for on-premises SharePoint. For Online it attempts NTLM then basic.
+    """
+    from app.services.rag_service import ingest_file
+    import requests as _req
+
+    SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
+    site = req.site_url.rstrip("/")
+    headers = {"Accept": "application/json;odata=verbose"}
+    ingested: list = []
+    errors: list = []
+
+    # Try NTLM first (on-prem), then basic
+    session = _req.Session()
+    try:
+        from requests_ntlm import HttpNtlmAuth
+        session.auth = HttpNtlmAuth(req.username, req.password)
+    except ImportError:
+        session.auth = (req.username, req.password)
+
+    def get_files(folder_url: str):
+        files_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Files"
+        try:
+            r = session.get(files_url, headers=headers, timeout=30, verify=True)
+            if r.ok:
+                for item in r.json().get("d", {}).get("results", []):
+                    yield item.get("ServerRelativeUrl", ""), item.get("Name", "")
+        except Exception as e:
+            logger.warning(f"[SharePoint-REST] List files failed: {e}")
+
+        folders_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Folders"
+        try:
+            r = session.get(folders_url, headers=headers, timeout=30, verify=True)
+            if r.ok:
+                for sf in r.json().get("d", {}).get("results", []):
+                    sf_url = sf.get("ServerRelativeUrl", "")
+                    sf_name = sf.get("Name", "")
+                    if sf_url and sf_name not in ("Forms",):
+                        yield from get_files(sf_url)
+        except Exception as e:
+            logger.warning(f"[SharePoint-REST] List folders failed: {e}")
+
+    # Build base folder path
+    import re as _re
+    site_match = _re.search(r"/sites/([^/?#]+)", site)
+    site_path = f"/sites/{site_match.group(1)}" if site_match else ""
+    base_folder = f"{site_path}/{req.library_path}" if site_path else f"/{req.library_path}"
+
+    for file_rel_url, file_name in get_files(base_folder):
+        ext = os.path.splitext(file_name)[1].lower()
+        if ext not in SUPPORTED_EXTS:
+            continue
+        dl_url = f"{site}/_api/web/GetFileByServerRelativeUrl('{file_rel_url}')/$value"
+        try:
+            dl = session.get(dl_url, timeout=60, verify=True)
+            if not dl.ok:
+                errors.append({"file": file_name, "error": f"HTTP {dl.status_code}"})
+                continue
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(dl.content)
+                tmp_path = tmp.name
+            try:
+                entities = ingest_file(tmp_path)
+                ingested.append({"file": file_name, "entities": entities})
+            except Exception as e:
+                errors.append({"file": file_name, "error": str(e)[:200]})
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+        except Exception as e:
+            errors.append({"file": file_name, "error": str(e)[:200]})
+
+    return {
+        "status": "complete",
+        "ingested": len(ingested),
+        "errors": len(errors),
+        "files": ingested,
+        "error_details": errors,
+        "auth_method": "REST-API-fallback",
+    }
+
+
+@router.post("/sharepoint/ingest")
+def sharepoint_ingest(
+    req: SharePointRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Connect to SharePoint Online or on-premises, recursively traverse all folders,
+    download every supported file, and ingest through the RAG pipeline.
+
+    Authentication strategy (tries in order):
+      1. Office365-REST-Python-Client with UserCredential (SharePoint Online)
+      2. REST API with NTLM/Basic auth (on-premises fallback)
+    """
+    # Strategy 1: Office365-REST-Python-Client
+    try:
+        result = _ingest_via_office365_client(req)
+        logger.info(
+            f"[SharePoint] Office365 client: {result['ingested']} ingested, "
+            f"{result['errors']} errors"
+        )
+        return result
+    except Exception as e:
+        logger.warning(f"[SharePoint] Office365 client failed: {e}. Trying REST fallback...")
+
+    # Strategy 2: REST API fallback
+    try:
+        result = _ingest_via_rest_api(req)
+        logger.info(
+            f"[SharePoint] REST fallback: {result['ingested']} ingested, "
+            f"{result['errors']} errors"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"[SharePoint] All strategies failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"SharePoint connection failed: {str(e)[:300]}\n\n"
+                "Troubleshooting:\n"
+                "• Ensure site_url is the base site (e.g. https://company.sharepoint.com/sites/MySite)\n"
+                "• library_path should be the folder path within the site (e.g. 'Shared Documents/FERC Documents')\n"
+                "• Verify credentials have at least Read access to the library"
+            ),
+        )
+
+
+# ── Document Access Control Management ───────────────────────────────────────
+
+VALID_ROLES = {"public", "user", "admin"}
+
+
+class DocumentAccessRequest(BaseModel):
+    filename: str
+    access_roles: List[str]   # e.g. ["user", "admin"] or ["admin"] or ["public","user","admin"]
+
+
+@router.put("/document/access")
+def update_document_access(
+    data: DocumentAccessRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Update the access roles for ALL Qdrant chunks belonging to a given document.
+    Only admin can call this endpoint.
+
+    access_roles examples:
+      ["admin"]                    — admin only (most restrictive, default)
+      ["user", "admin"]            — authenticated users + admin
+      ["public", "user", "admin"]  — everyone (least restrictive)
+
+    Returns the number of chunks updated.
+    """
+    invalid = [r for r in data.access_roles if r not in VALID_ROLES]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid roles: {invalid}. Allowed: {sorted(VALID_ROLES)}",
+        )
+    if not data.access_roles:
+        raise HTTPException(status_code=400, detail="access_roles cannot be empty")
+
+    try:
+        from core.database import get_qdrant_connection
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        cfg = get_qdrant_connection()
+        client = QdrantClient(host=cfg.host, port=cfg.port)
+        collection = "phase1_documents"
+
+        # Scroll to find all points for this document
+        updated = 0
+        offset = None
+        while True:
+            results, next_offset = client.scroll(
+                collection_name=collection,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="file_name", match=MatchValue(value=data.filename))]
+                ),
+                limit=100,
+                with_payload=True,
+                with_vectors=False,
+                offset=offset,
+            )
+            if not results:
+                break
+
+            point_ids = [str(p.id) for p in results]
+            # Update payload for each batch
+            client.set_payload(
+                collection_name=collection,
+                payload={"access_roles": data.access_roles},
+                points=point_ids,
+            )
+            updated += len(point_ids)
+
+            if next_offset is None:
+                break
+            offset = next_offset
+
+        logger.info(
+            f"[DocumentAccess] Updated {updated} chunks for '{data.filename}' "
+            f"→ roles: {data.access_roles}"
+        )
+        return {
+            "status": "updated",
+            "filename": data.filename,
+            "access_roles": data.access_roles,
+            "chunks_updated": updated,
+        }
+
+    except Exception as e:
+        logger.error(f"[DocumentAccess] Failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Access update failed: {str(e)[:200]}")
+
+
+@router.get("/document/access")
+def get_document_access(
+    filename: str = Query(...),
+    current_user: dict = Depends(require_admin),
+):
+    """Get current access roles for a document's chunks."""
+    try:
+        from core.database import get_qdrant_connection
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        cfg = get_qdrant_connection()
+        client = QdrantClient(host=cfg.host, port=cfg.port)
+
+        results, _ = client.scroll(
+            collection_name="phase1_documents",
+            scroll_filter=Filter(
+                must=[FieldCondition(key="file_name", match=MatchValue(value=filename))]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not results:
+            raise HTTPException(status_code=404, detail=f"No chunks found for '{filename}'")
+
+        roles = results[0].payload.get("access_roles", ["admin"])
+        return {"filename": filename, "access_roles": roles}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)[:200])
+
+
+# ── Document Content Reader ───────────────────────────────────────────────────
+
+@router.get("/document/read")
+def read_document_content(
+    filename: str = Query(..., description="Exact filename as uploaded"),
+    line: Optional[int] = Query(None, ge=1, description="Specific line number (1-indexed)"),
+    line_from: Optional[int] = Query(None, ge=1, description="Start of line range"),
+    line_to: Optional[int] = Query(None, ge=1, description="End of line range"),
+    full: bool = Query(False, description="Return full document content"),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Read exact line(s) or full content of an uploaded document.
+    Admin only — returns verbatim document text.
+
+    Examples:
+      GET /admin/document/read?filename=report.pdf&line=5        → line 5
+      GET /admin/document/read?filename=report.pdf&full=true     → whole doc
+      GET /admin/document/read?filename=report.pdf&line_from=3&line_to=10 → lines 3-10
+    """
+    from services.document_reader import DocumentReader, DocumentReadRequest
+    from pathlib import Path
+
+    reader = DocumentReader()
+
+    # Check file exists
+    available = reader.list_files()
+    if filename not in available:
+        raise HTTPException(
+            status_code=404,
+            detail=f"File '{filename}' not found. Available: {', '.join(available[:10]) or 'none'}",
+        )
+
+    req = DocumentReadRequest(
+        is_doc_read=True,
+        filename=filename,
+        line_number=line,
+        is_full_doc=full or (line is None and line_from is None and line_to is None),
+        line_range=(line_from, line_to) if line_from and line_to else None,
+    )
+
+    content = reader.read(req)
+    lines_total = 0
+    try:
+        file_path = reader._resolve_file(filename)
+        if file_path:
+            raw_lines = reader._extract_lines(file_path)
+            lines_total = len(raw_lines)
+    except Exception:
+        pass
+
+    return {
+        "filename": filename,
+        "total_lines": lines_total,
+        "requested": {
+            "line": line,
+            "line_from": line_from,
+            "line_to": line_to,
+            "full": full,
+        },
+        "content": content,
+    }
+
+
+@router.get("/document/list")
+def list_uploaded_documents(current_user: dict = Depends(require_admin)):
+    """List all uploaded documents with their metadata."""
+    from services.document_reader import DocumentReader
+    from pathlib import Path
+    import os
+
+    reader = DocumentReader()
+    files = reader.list_files()
+    result = []
+    for fname in files:
+        fpath = reader.upload_dir / fname
+        try:
+            size = os.path.getsize(fpath)
+            mtime = os.path.getmtime(fpath)
+        except Exception:
+            size = 0
+            mtime = 0
+        result.append({
+            "filename": fname,
+            "size_bytes": size,
+            "modified_at": datetime.utcfromtimestamp(mtime).isoformat() if mtime else None,
+            "extension": Path(fname).suffix.lower(),
+        })
+    return {"files": result, "total": len(result)}
 
 
 # ── System health ─────────────────────────────────────────────────────────────
@@ -611,3 +984,44 @@ def storage_info(current_user: dict = Depends(require_admin)):
         },
         "vector_store": qdrant_info,
     }
+
+
+# ── Error Log endpoints ────────────────────────────────────────────────────────
+
+@router.get("/errors")
+def get_error_log(
+    limit: int = Query(100, ge=1, le=1000),
+    level: Optional[str] = Query(None, description="Filter by level: ERROR, WARNING, CRITICAL"),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Return recent error log entries. Newest first.
+    Optionally filter by level (ERROR / WARNING / CRITICAL).
+    """
+    from app.error_logger import read_recent_errors
+    entries = read_recent_errors(limit=limit, level=level)
+    return {"total": len(entries), "entries": entries}
+
+
+@router.get("/errors/stats")
+def get_error_stats(current_user: dict = Depends(require_admin)):
+    """Return aggregated error statistics (counts by level and source)."""
+    from app.error_logger import get_error_stats
+    return get_error_stats()
+
+
+@router.delete("/errors")
+def clear_error_log(current_user: dict = Depends(require_admin)):
+    """Truncate the error log file (admin action — irreversible)."""
+    from pathlib import Path
+    log_file = Path(__file__).parent.parent.parent / "logs" / "error_log.jsonl"
+    txt_file = Path(__file__).parent.parent.parent / "logs" / "error_log.txt"
+    try:
+        if log_file.exists():
+            log_file.write_text("")
+        if txt_file.exists():
+            txt_file.write_text("")
+        logger.info("[Admin] Error log cleared by %s", current_user.get("email"))
+        return {"status": "cleared"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not clear log: {e}")

@@ -1,6 +1,8 @@
 import logging
 from typing import Optional
 
+from app.error_logger import log_error, log_warning
+
 logger = logging.getLogger(__name__)
 
 # Lazy-init RAG to avoid crashing the backend if Qdrant/Neo4j are unavailable
@@ -28,8 +30,9 @@ def _get_orchestrator():
         return None
     if _orchestrator is None:
         try:
-            from services.agent_orchestrator import AgentOrchestrator
-            _orchestrator = AgentOrchestrator(
+            # Use EnhancedAgentOrchestrator (extends AgentOrchestrator — OCP)
+            from services.enhanced_orchestrator import EnhancedAgentOrchestrator
+            _orchestrator = EnhancedAgentOrchestrator(
                 phase1_rag=rag,
                 graph_service=rag.graph_rag.graph,
                 llm_service=rag.llm,
@@ -37,10 +40,24 @@ def _get_orchestrator():
                 reranker=rag.reranker,
                 classifier=rag.classifier,
             )
-            logger.info("[RAGService] Agent orchestrator initialized")
+            logger.info("[RAGService] EnhancedAgentOrchestrator initialized")
         except Exception as e:
-            logger.warning(f"[RAGService] Orchestrator init failed: {e}")
-            _orchestrator = None
+            logger.warning(f"[RAGService] Enhanced orchestrator init failed, "
+                           f"falling back to base: {e}")
+            try:
+                from services.agent_orchestrator import AgentOrchestrator
+                _orchestrator = AgentOrchestrator(
+                    phase1_rag=rag,
+                    graph_service=rag.graph_rag.graph,
+                    llm_service=rag.llm,
+                    cache_service=rag.cache,
+                    reranker=rag.reranker,
+                    classifier=rag.classifier,
+                )
+                logger.info("[RAGService] Fallback: base AgentOrchestrator initialized")
+            except Exception as e2:
+                logger.warning(f"[RAGService] Orchestrator init failed: {e2}")
+                _orchestrator = None
     return _orchestrator
 
 
@@ -71,7 +88,8 @@ def ask_rag_full(question: str, role: str, session_id: str = "") -> dict:
                 "tools_used": state.tools_used,
             }
         except Exception as e:
-            logger.error(f"[RAGService] Orchestrator error: {e}")
+            log_error("RAGService", "Orchestrator query failed", exc=e,
+                      extra={"question": question[:200], "role": role})
 
     rag = _get_rag()
     if rag is not None:
@@ -87,7 +105,8 @@ def ask_rag_full(question: str, role: str, session_id: str = "") -> dict:
                 "tools_used": ["DocumentSearchTool"],
             }
         except Exception as e:
-            logger.error(f"[RAGService] Phase1RAG query error: {e}")
+            log_error("RAGService", "Phase1RAG query failed", exc=e,
+                      extra={"question": question[:200], "role": role})
 
     return {
         "answer": "The AI retrieval service is currently unavailable. Please ensure Qdrant is running and documents have been ingested.",
@@ -119,23 +138,42 @@ def ingest_file(file_path: str) -> Optional[dict]:
     try:
         text = pipeline.extract_text(file_path)
     except Exception as e:
-        logger.error(f"Text extraction failed for {file_path}: {e}")
+        log_error("Ingest", f"Text extraction failed for {Path(file_path).name}", exc=e,
+                  extra={"file_path": file_path})
         raise
 
     chunks = pipeline.chunk_text(text)
     fname = Path(file_path).name
     access_roles = pipeline._infer_access_roles(file_path, text)
 
+    # Automatic metadata extraction (no hardcoding — MetadataExtractor driven)
+    metadata: dict = {}
+    try:
+        from services.metadata_extractor import MetadataExtractor
+        metadata = MetadataExtractor().extract(text, filename=fname)
+        logger.info(f"[ingest] Metadata for {fname}: {metadata}")
+    except Exception as e:
+        logger.warning(f"[ingest] Metadata extraction failed: {e}")
+
     points = []
     for chunk in chunks:
         if not chunk.strip():
             continue
         vector = rag.embedder.embed(chunk)
+        payload = {
+            "text": chunk,
+            "file_name": fname,
+            "access_roles": access_roles,
+            # Metadata enrichment — stored per chunk for filtered retrieval
+            "domain": metadata.get("domain", "general"),
+            "doc_type": metadata.get("doc_type", "document"),
+            "sensitivity": metadata.get("sensitivity", "low"),
+        }
         points.append(
             PointStruct(
                 id=str(uuid.uuid4()),
                 vector=vector,
-                payload={"text": chunk, "file_name": fname, "access_roles": access_roles},
+                payload=payload,
             )
         )
 
@@ -145,5 +183,16 @@ def ingest_file(file_path: str) -> Optional[dict]:
 
     entities = rag.graph_rag.ingest_document(text, fname)
     logger.info(f"Graph ingestion complete for {fname}: {entities}")
+
+    # Store document metadata in graph and build cross-document links
+    try:
+        graph_svc = rag.graph_rag.graph
+        if metadata:
+            graph_svc.store_document_metadata(fname, metadata)
+        if entities:
+            cross_links = graph_svc.create_cross_document_links(fname, entities)
+            logger.info(f"[ingest] Created {cross_links} cross-document links for {fname}")
+    except Exception as e:
+        logger.warning(f"[ingest] Cross-document linking failed: {e}")
 
     return entities

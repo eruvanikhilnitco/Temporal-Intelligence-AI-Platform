@@ -9,6 +9,10 @@ __pycache__/
 # Runtime data
 cortexflow.db
 uploaded_docs/
+logs/
+
+# Temp / misc
+"Error log.py"
 
 # Frontend build output
 frontend/dist/

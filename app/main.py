@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,6 +8,7 @@ from app.api.auth_routes import router as auth_router
 from app.api.admin_routes import router as admin_router
 from app.db import init_db, get_db
 from core.config import get_settings
+from app.error_logger import get_error_middleware, log_critical
 
 settings = get_settings()
 
@@ -17,6 +20,9 @@ app = FastAPI(
     ),
     version="4.0.0",
 )
+
+# Error logging middleware must be added BEFORE CORSMiddleware so it wraps everything
+app.add_middleware(get_error_middleware())
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,10 +38,10 @@ def startup():
     try:
         init_db()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"[Startup] DB init failed: {e}")
+        log_critical("Startup", "Database initialisation failed", exc=e)
     _seed_default_rules()
     _warmup_rag_background()
+    logging.getLogger(__name__).info("[Startup] CortexFlow v4.0 started — error log: logs/error_log.jsonl")
 
 
 def _warmup_rag_background():

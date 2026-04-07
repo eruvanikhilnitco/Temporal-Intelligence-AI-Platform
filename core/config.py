@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # ---------------- DB CONFIG ----------------
-    neo4j_uri: str = "bolt://localhost:7689"
+    neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password123"
 

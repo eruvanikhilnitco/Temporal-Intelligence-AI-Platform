@@ -1,31 +1,203 @@
 """
 Phase 3 - Graph Service
-Entity extraction + SQLite relationship storage and querying.
-No Neo4j required — uses the same SQLite DB as the rest of the app.
+Entity extraction + relationship storage and querying.
+
+Primary backend: Neo4j (bolt://localhost:7687) via the official neo4j Python driver.
+Fallback backend: SQLite — used automatically if Neo4j is unreachable.
+
+SOLID:
+  - Single Responsibility: each backend class handles one storage technology.
+  - Open/Closed: add new backends by subclassing _GraphBackend; never touch existing ones.
+  - Liskov:  both backends satisfy the same _GraphBackend interface.
+  - Dependency-Inversion: GraphService receives a backend; callers never touch the backend.
 """
 
 import logging
 import re
 import sqlite3
 import uuid
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Path to the SQLite DB (same file the app uses)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Abstract backend interface
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _GraphBackend(ABC):
+    @abstractmethod
+    def create_relation(
+        self,
+        entity_a: str, relation: str, entity_b: str,
+        source_doc: str,
+        entity_a_type: str, entity_b_type: str,
+    ) -> bool: ...
+
+    @abstractmethod
+    def query_entity(self, entity_name: str) -> List[Dict]: ...
+
+    @abstractmethod
+    def search_entities(self, keyword: str) -> List[Dict]: ...
+
+    @abstractmethod
+    def get_all_data(self, limit: int) -> Dict: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+    @property
+    @abstractmethod
+    def backend_name(self) -> str: ...
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Neo4j backend
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _Neo4jBackend(_GraphBackend):
+    """Stores graph data in Neo4j via bolt protocol."""
+
+    def __init__(self, uri: str, user: str, password: str):
+        from neo4j import GraphDatabase
+        self._driver = GraphDatabase.driver(uri, auth=(user, password))
+        # Verify connectivity — raises if unreachable
+        self._driver.verify_connectivity()
+        self._ensure_constraints()
+        logger.info("[GraphService] Connected to Neo4j at %s", uri)
+
+    def _ensure_constraints(self):
+        with self._driver.session() as s:
+            s.run(
+                "CREATE CONSTRAINT entity_name IF NOT EXISTS "
+                "FOR (n:Entity) REQUIRE n.name IS UNIQUE"
+            )
+
+    @property
+    def backend_name(self) -> str:
+        return "neo4j"
+
+    def close(self) -> None:
+        try:
+            self._driver.close()
+        except Exception:
+            pass
+
+    def create_relation(
+        self,
+        entity_a: str, relation: str, entity_b: str,
+        source_doc: str,
+        entity_a_type: str = "Entity", entity_b_type: str = "Entity",
+    ) -> bool:
+        rel_type = re.sub(r"[^A-Za-z0-9_]", "_", relation.upper())
+        cypher = (
+            f"MERGE (a:{entity_a_type} {{name: $a}}) "
+            f"MERGE (b:{entity_b_type} {{name: $b}}) "
+            f"MERGE (a)-[r:{rel_type} {{source: $src}}]->(b) "
+            "RETURN r"
+        )
+        try:
+            with self._driver.session() as s:
+                s.run(cypher, a=entity_a.strip(), b=entity_b.strip(), src=source_doc)
+            return True
+        except Exception as e:
+            logger.error("[Neo4j] create_relation failed: %s", e)
+            return False
+
+    def query_entity(self, entity_name: str) -> List[Dict]:
+        cypher = (
+            "MATCH (a)-[r]->(b) "
+            "WHERE a.name = $name OR b.name = $name "
+            "RETURN a.name AS from_node, type(r) AS relation, b.name AS to_node, "
+            "       r.source AS source LIMIT 50"
+        )
+        try:
+            with self._driver.session() as s:
+                records = s.run(cypher, name=entity_name).data()
+            return [
+                {
+                    "from": r["from_node"], "relation": r["relation"],
+                    "to": r["to_node"], "source": r.get("source") or "unknown",
+                }
+                for r in records
+            ]
+        except Exception as e:
+            logger.error("[Neo4j] query_entity failed: %s", e)
+            return []
+
+    def search_entities(self, keyword: str) -> List[Dict]:
+        cypher = (
+            "MATCH (n)-[r]->(m) "
+            "WHERE toLower(n.name) CONTAINS toLower($kw) "
+            "RETURN n.name AS from_entity, labels(n)[0] AS from_type, "
+            "       type(r) AS relation, m.name AS to_entity, r.source AS source LIMIT 30"
+        )
+        try:
+            with self._driver.session() as s:
+                records = s.run(cypher, kw=keyword).data()
+            return [
+                {
+                    "from": r["from_entity"], "type": r.get("from_type"),
+                    "relation": r["relation"], "to": r["to_entity"],
+                    "source": r.get("source"),
+                }
+                for r in records
+            ]
+        except Exception as e:
+            logger.error("[Neo4j] search_entities failed: %s", e)
+            return []
+
+    def get_all_data(self, limit: int = 200) -> Dict:
+        try:
+            with self._driver.session() as s:
+                edges = s.run(
+                    "MATCH (a)-[r]->(b) "
+                    "RETURN a.name AS from_node, type(r) AS relation, "
+                    "       b.name AS to_node, r.source AS source "
+                    f"LIMIT {limit}"
+                ).data()
+                nodes_raw = s.run(
+                    "MATCH (n) RETURN n.name AS name, labels(n)[0] AS type, "
+                    f"n.source AS source LIMIT {limit * 2}"
+                ).data()
+
+            nodes = [
+                {"id": r["name"], "name": r["name"],
+                 "type": r.get("type") or "Entity", "source": r.get("source")}
+                for r in nodes_raw
+            ]
+            edges_out = [
+                {"from_node": r["from_node"], "relation": r["relation"],
+                 "to_node": r["to_node"], "source": r.get("source")}
+                for r in edges
+            ]
+            return {
+                "nodes": nodes, "edges": edges_out,
+                "total_nodes": len(nodes), "total_edges": len(edges_out),
+                "backend": "neo4j",
+            }
+        except Exception as e:
+            logger.error("[Neo4j] get_all_data failed: %s", e)
+            return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0, "backend": "neo4j"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SQLite backend (zero-dependency fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
 _DB_PATH = str(Path(__file__).parent.parent / "cortexflow.db")
 
 
-def _conn() -> sqlite3.Connection:
+def _sqlite_conn() -> sqlite3.Connection:
     c = sqlite3.connect(_DB_PATH, check_same_thread=False)
     c.row_factory = sqlite3.Row
     return c
 
 
-def _init_graph_tables():
-    """Create graph tables if they don't exist."""
-    with _conn() as c:
+def _init_sqlite_tables():
+    with _sqlite_conn() as c:
         c.executescript("""
             CREATE TABLE IF NOT EXISTS graph_nodes (
                 id   TEXT PRIMARY KEY,
@@ -50,23 +222,150 @@ def _init_graph_tables():
         """)
 
 
-# Initialise tables when the module loads
-try:
-    _init_graph_tables()
-except Exception as _e:
-    logger.warning(f"[GraphService] Could not create graph tables: {_e}")
+class _SQLiteBackend(_GraphBackend):
+    """Stores graph data in a local SQLite database."""
+
+    def __init__(self):
+        _init_sqlite_tables()
+        logger.info("[GraphService] Using SQLite backend at %s", _DB_PATH)
+
+    @property
+    def backend_name(self) -> str:
+        return "sqlite"
+
+    def close(self) -> None:
+        pass  # SQLite connections are per-operation
+
+    def create_relation(
+        self,
+        entity_a: str, relation: str, entity_b: str,
+        source_doc: str,
+        entity_a_type: str = "Entity", entity_b_type: str = "Entity",
+    ) -> bool:
+        rel_type = re.sub(r"[^A-Za-z0-9_]", "_", relation.upper())
+        try:
+            with _sqlite_conn() as c:
+                c.execute(
+                    "INSERT OR IGNORE INTO graph_nodes(id, name, type, source) VALUES(?,?,?,?)",
+                    (str(uuid.uuid4()), entity_a.strip(), entity_a_type, source_doc),
+                )
+                c.execute(
+                    "INSERT OR IGNORE INTO graph_nodes(id, name, type, source) VALUES(?,?,?,?)",
+                    (str(uuid.uuid4()), entity_b.strip(), entity_b_type, source_doc),
+                )
+                c.execute(
+                    "INSERT OR IGNORE INTO graph_edges(from_node, to_node, relation, source) "
+                    "VALUES(?,?,?,?)",
+                    (entity_a.strip(), entity_b.strip(), rel_type, source_doc),
+                )
+            return True
+        except Exception as e:
+            logger.error("[SQLite] create_relation failed: %s", e)
+            return False
+
+    def query_entity(self, entity_name: str) -> List[Dict]:
+        try:
+            with _sqlite_conn() as c:
+                rows = c.execute(
+                    "SELECT from_node, relation, to_node, source FROM graph_edges "
+                    "WHERE from_node = ? OR to_node = ? LIMIT 50",
+                    (entity_name, entity_name),
+                ).fetchall()
+            return [
+                {"from": r["from_node"], "relation": r["relation"],
+                 "to": r["to_node"], "source": r["source"] or "unknown"}
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error("[SQLite] query_entity failed: %s", e)
+            return []
+
+    def search_entities(self, keyword: str) -> List[Dict]:
+        try:
+            with _sqlite_conn() as c:
+                rows = c.execute(
+                    "SELECT n.name AS from_entity, n.type AS from_type, "
+                    "       e.relation, e.to_node AS to_entity, e.source "
+                    "FROM graph_nodes n "
+                    "LEFT JOIN graph_edges e ON e.from_node = n.name "
+                    "WHERE LOWER(n.name) LIKE ? LIMIT 30",
+                    (f"%{keyword.lower()}%",),
+                ).fetchall()
+            return [
+                {"from": r["from_entity"], "type": r["from_type"],
+                 "relation": r["relation"], "to": r["to_entity"],
+                 "source": r["source"]}
+                for r in rows
+            ]
+        except Exception as e:
+            logger.error("[SQLite] search_entities failed: %s", e)
+            return []
+
+    def get_all_data(self, limit: int = 200) -> Dict:
+        try:
+            with _sqlite_conn() as c:
+                edge_rows = c.execute(
+                    "SELECT from_node, relation, to_node, source FROM graph_edges LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                node_rows = c.execute(
+                    "SELECT name, type, source FROM graph_nodes LIMIT ?",
+                    (limit * 2,),
+                ).fetchall()
+            nodes = [
+                {"id": r["name"], "name": r["name"],
+                 "type": r["type"] or "Entity", "source": r["source"]}
+                for r in node_rows
+            ]
+            edges = [
+                {"from_node": r["from_node"], "relation": r["relation"],
+                 "to_node": r["to_node"], "source": r["source"]}
+                for r in edge_rows
+            ]
+            return {
+                "nodes": nodes, "edges": edges,
+                "total_nodes": len(nodes), "total_edges": len(edges),
+                "backend": "sqlite",
+            }
+        except Exception as e:
+            logger.error("[SQLite] get_all_data failed: %s", e)
+            return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0, "backend": "sqlite"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GraphService — public API, backend-agnostic
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_backend() -> _GraphBackend:
+    """Try Neo4j; fall back to SQLite on any error."""
+    try:
+        from core.config import get_settings
+        s = get_settings()
+        return _Neo4jBackend(s.neo4j_uri, s.neo4j_user, s.neo4j_password)
+    except Exception as e:
+        logger.warning("[GraphService] Neo4j unavailable (%s) — using SQLite fallback", e)
+        return _SQLiteBackend()
 
 
 class GraphService:
     """
-    Drop-in replacement for the Neo4j GraphService.
-    Stores entity relationships in SQLite for zero-dependency operation.
+    Drop-in graph store.  Uses Neo4j when available, falls back to SQLite.
+    All callers use this class — they never touch the backend directly.
     """
 
-    # Keep driver=None so existing callers that check `gs.driver` still work
-    driver = None
+    # Keep driver attribute for any callers that check gs.driver
+    @property
+    def driver(self):
+        if isinstance(self._backend, _Neo4jBackend):
+            return self._backend._driver
+        return None
+
+    def __init__(self, backend: Optional[_GraphBackend] = None):
+        self._backend: _GraphBackend = backend or _build_backend()
+        logger.info("[GraphService] Active backend: %s", self._backend.backend_name)
 
     # ── Entity extraction patterns ───────────────────────────────────────────
+
     CONTRACT_PATTERNS = [
         r"contract\s*(?:no\.?|number|#|num)?\s*[:\-]?\s*([A-Z0-9][\w\-/]{2,30})",
         r"agreement\s*(?:no\.?|number|#)?\s*[:\-]?\s*([A-Z0-9][\w\-/]{2,30})",
@@ -88,10 +387,10 @@ class GraphService:
         r"|Association|Authority|Commission|Board))\b",
     ]
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # ── Delegation to backend ─────────────────────────────────────────────────
 
-    def close(self):
-        pass  # No persistent connection to close
+    def close(self) -> None:
+        self._backend.close()
 
     def create_relation(
         self,
@@ -102,106 +401,21 @@ class GraphService:
         entity_a_type: str = "Entity",
         entity_b_type: str = "Entity",
     ) -> bool:
-        rel_type = re.sub(r"[^A-Za-z0-9_]", "_", relation.upper())
-        try:
-            with _conn() as c:
-                # Upsert nodes
-                c.execute(
-                    "INSERT OR IGNORE INTO graph_nodes(id, name, type, source) VALUES(?,?,?,?)",
-                    (str(uuid.uuid4()), entity_a.strip(), entity_a_type, source_doc),
-                )
-                c.execute(
-                    "INSERT OR IGNORE INTO graph_nodes(id, name, type, source) VALUES(?,?,?,?)",
-                    (str(uuid.uuid4()), entity_b.strip(), entity_b_type, source_doc),
-                )
-                # Upsert edge
-                c.execute(
-                    """INSERT OR IGNORE INTO graph_edges(from_node, to_node, relation, source)
-                       VALUES(?,?,?,?)""",
-                    (entity_a.strip(), entity_b.strip(), rel_type, source_doc),
-                )
-            return True
-        except Exception as e:
-            logger.error(f"[GraphService] create_relation failed: {e}")
-            return False
+        return self._backend.create_relation(
+            entity_a, relation, entity_b, source_doc, entity_a_type, entity_b_type
+        )
 
     def query_entity(self, entity_name: str, max_hops: int = 2) -> List[Dict]:
-        results = []
-        try:
-            with _conn() as c:
-                rows = c.execute(
-                    """SELECT from_node, relation, to_node, source
-                       FROM graph_edges
-                       WHERE from_node = ? OR to_node = ?
-                       LIMIT 50""",
-                    (entity_name, entity_name),
-                ).fetchall()
-            for r in rows:
-                results.append({
-                    "from": r["from_node"],
-                    "relation": r["relation"],
-                    "to": r["to_node"],
-                    "source": r["source"] or "unknown",
-                })
-        except Exception as e:
-            logger.error(f"[GraphService] query_entity failed: {e}")
-        return results
+        return self._backend.query_entity(entity_name)
 
     def search_entities(self, keyword: str) -> List[Dict]:
-        results = []
-        try:
-            with _conn() as c:
-                rows = c.execute(
-                    """SELECT n.name AS from_entity, n.type AS from_type,
-                              e.relation, e.to_node AS to_entity, e.source
-                       FROM graph_nodes n
-                       LEFT JOIN graph_edges e ON e.from_node = n.name
-                       WHERE LOWER(n.name) LIKE ?
-                       LIMIT 30""",
-                    (f"%{keyword.lower()}%",),
-                ).fetchall()
-            for r in rows:
-                results.append({
-                    "from": r["from_entity"],
-                    "type": r["from_type"],
-                    "relation": r["relation"],
-                    "to": r["to_entity"],
-                    "source": r["source"],
-                })
-        except Exception as e:
-            logger.error(f"[GraphService] search_entities failed: {e}")
-        return results
+        return self._backend.search_entities(keyword)
 
     def get_all_data(self, limit: int = 200) -> Dict:
-        """Return all nodes and edges for graph visualisation."""
-        try:
-            with _conn() as c:
-                edge_rows = c.execute(
-                    "SELECT from_node, relation, to_node, source FROM graph_edges LIMIT ?",
-                    (limit,),
-                ).fetchall()
-                node_rows = c.execute(
-                    "SELECT name, type, source FROM graph_nodes LIMIT ?",
-                    (limit * 2,),
-                ).fetchall()
+        return self._backend.get_all_data(limit)
 
-            nodes = [
-                {"id": r["name"], "name": r["name"],
-                 "type": r["type"] or "Entity", "source": r["source"]}
-                for r in node_rows
-            ]
-            edges = [
-                {"from_node": r["from_node"], "relation": r["relation"],
-                 "to_node": r["to_node"], "source": r["source"]}
-                for r in edge_rows
-            ]
-            return {
-                "nodes": nodes, "edges": edges,
-                "total_nodes": len(nodes), "total_edges": len(edges),
-            }
-        except Exception as e:
-            logger.error(f"[GraphService] get_all_data failed: {e}")
-            return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0}
+    def backend_info(self) -> str:
+        return self._backend.backend_name
 
     # ── Entity extraction ─────────────────────────────────────────────────────
 
@@ -223,17 +437,13 @@ class GraphService:
         for contract in contracts:
             label = f"Contract {contract}" if not contract.startswith("Contract") else contract
             if dates:
-                self.create_relation(label, "starts_on", dates[0], source_doc,
-                                     "Contract", "Date")
+                self.create_relation(label, "starts_on", dates[0], source_doc, "Contract", "Date")
             if len(dates) > 1:
-                self.create_relation(label, "ends_on", dates[-1], source_doc,
-                                     "Contract", "Date")
+                self.create_relation(label, "ends_on", dates[-1], source_doc, "Contract", "Date")
             for org in orgs:
-                self.create_relation(label, "issued_by", org, source_doc,
-                                     "Contract", "Organization")
+                self.create_relation(label, "issued_by", org, source_doc, "Contract", "Organization")
             for amount in amounts:
-                self.create_relation(label, "has_amount", f"${amount}", source_doc,
-                                     "Contract", "Amount")
+                self.create_relation(label, "has_amount", f"${amount}", source_doc, "Contract", "Amount")
 
         all_entities = (
             [("Contract", c) for c in contracts]
@@ -242,12 +452,11 @@ class GraphService:
             + [("Organization", o) for o in orgs]
         )
         for etype, ename in all_entities:
-            self.create_relation(source_doc, "mentions", ename, source_doc,
-                                 "Document", etype)
+            self.create_relation(source_doc, "mentions", ename, source_doc, "Document", etype)
 
         logger.info(
-            f"[GraphService] {source_doc}: {len(contracts)} contracts, "
-            f"{len(dates)} dates, {len(amounts)} amounts, {len(orgs)} orgs"
+            "[GraphService] %s: %d contracts, %d dates, %d amounts, %d orgs",
+            source_doc, len(contracts), len(dates), len(amounts), len(orgs),
         )
         return entities
 
@@ -267,6 +476,62 @@ class GraphService:
                 if line not in lines:
                     lines.append(line)
         return "\n".join(lines)
+
+    # ── Cross-document linking ────────────────────────────────────────────────
+
+    def create_cross_document_links(self, source_doc: str, entities: Dict[str, List[str]]) -> int:
+        """
+        Find other documents sharing the same entities and create
+        SHARES_ENTITY_WITH edges between them.
+        """
+        links_created = 0
+        all_entity_names: List[str] = (
+            [f"Contract {c}" for c in entities.get("contracts", [])]
+            + entities.get("organizations", [])
+            + entities.get("dates", [])
+        )
+
+        for entity_name in all_entity_names[:20]:
+            for rel in self.query_entity(entity_name):
+                other_doc = rel.get("source")
+                if other_doc and other_doc != source_doc:
+                    created = self.create_relation(
+                        source_doc, "shares_entity_with", other_doc,
+                        source_doc, "Document", "Document",
+                    )
+                    self.create_relation(
+                        source_doc, "co_mentions", entity_name,
+                        source_doc, "Document", "Entity",
+                    )
+                    if created:
+                        links_created += 1
+
+        if links_created:
+            logger.info("[GraphService] %d cross-doc links created for %s", links_created, source_doc)
+        return links_created
+
+    def get_document_neighbors(self, doc_name: str) -> List[Dict]:
+        """Return documents that share entities with the given document."""
+        results = []
+        for rel in self.query_entity(doc_name):
+            if rel["relation"] in ("SHARES_ENTITY_WITH", "shares_entity_with"):
+                other = rel["to"] if rel["from"] == doc_name else rel["from"]
+                results.append({"document": other, "relation": rel["relation"], "source": rel["source"]})
+        return results
+
+    def store_document_metadata(self, doc_name: str, metadata: Dict) -> bool:
+        """Store extracted metadata as graph nodes connected to the document node."""
+        try:
+            domain = metadata.get("domain", "general")
+            doc_type = metadata.get("doc_type", "document")
+            sensitivity = metadata.get("sensitivity", "low")
+            self.create_relation(doc_name, "has_domain", domain, doc_name, "Document", "Domain")
+            self.create_relation(doc_name, "has_type", doc_type, doc_name, "Document", "DocType")
+            self.create_relation(doc_name, "has_sensitivity", sensitivity, doc_name, "Document", "Sensitivity")
+            return True
+        except Exception as e:
+            logger.error("[GraphService] store_document_metadata failed: %s", e)
+            return False
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

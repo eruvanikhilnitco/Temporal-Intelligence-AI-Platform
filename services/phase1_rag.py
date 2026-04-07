@@ -118,8 +118,12 @@ class Phase1RAG:
 
         print(f"[INFO] Phase 3: graph ingestion complete for {len(doc_texts)} document(s)")
 
-    # 🔥 QUERY (RBAC)
+    # 🔥 QUERY (RBAC) — returns plain text list (backward-compatible)
     def query(self, question: str, user_role: str = "user", top_k: int = 10):
+        return [c["text"] for c in self.query_with_sources(question, user_role, top_k)]
+
+    # SOURCE-ANNOTATED QUERY — returns list of {text, file_name, score}
+    def query_with_sources(self, question: str, user_role: str = "user", top_k: int = 10):
         query_vector = self.embedder.embed(question)
 
         results = self.client.query_points(
@@ -136,7 +140,16 @@ class Phase1RAG:
             }
         )
 
-        return [r.payload["text"] for r in results.points]
+        return [
+            {
+                "text": r.payload.get("text", ""),
+                "file_name": r.payload.get("file_name", "Unknown"),
+                "score": getattr(r, "score", 0.8),
+                "domain": r.payload.get("domain", "general"),
+            }
+            for r in results.points
+            if r.payload.get("text", "").strip()
+        ]
 
     # 🔥 FINAL (RBAC + CACHE + INTELLIGENCE)
     def ask(self, question: str, user_role: str = "user"):

@@ -5,8 +5,9 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Request
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Request, Form
 from fastapi.responses import StreamingResponse
+from typing import List as TypingList
 import json
 
 from app.api.schemas import AskRequest, AskResponse, UploadResponse, HealthResponse, SourceItem, FeedbackRequest
@@ -319,6 +320,86 @@ async def upload_document(
             filename=file.filename,
             message=f"File saved but ingestion encountered an error: {str(e)}",
         )
+
+
+@router.post("/upload/batch")
+async def upload_folder(
+    files: TypingList[UploadFile] = File(...),
+    current_user: dict = Depends(require_client),
+):
+    """
+    Batch upload endpoint — accepts multiple files at once (folder upload).
+    Each file is processed independently through the same RAG pipeline.
+    Supports nested folder uploads from the browser's webkitdirectory input.
+
+    Returns per-file results so the frontend can display individual statuses.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    results = []
+    for file in files:
+        if not file.filename:
+            continue
+
+        # Preserve relative path from folder (browsers send webkitRelativePath as filename)
+        # e.g., "folder/subfolder/doc.pdf" → stored as "subfolder__doc.pdf"
+        raw_name = file.filename.replace("/", "__").replace("\\", "__")
+        suffix = Path(raw_name).suffix.lower()
+
+        if suffix not in ALLOWED_EXTENSIONS:
+            results.append({
+                "filename": file.filename,
+                "status": "skipped",
+                "message": f"Unsupported file type '{suffix}'",
+                "entities": None,
+            })
+            continue
+
+        dest = UPLOAD_DIR / raw_name
+        try:
+            with dest.open("wb") as f:
+                shutil.copyfileobj(file.file, f)
+        except Exception as e:
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "message": f"Failed to save: {str(e)}",
+                "entities": None,
+            })
+            continue
+
+        try:
+            entities = ingest_file(str(dest))
+            results.append({
+                "filename": file.filename,
+                "stored_as": raw_name,
+                "status": "success",
+                "message": "Ingested successfully",
+                "entities": entities,
+            })
+        except Exception as e:
+            logger.error(f"[BatchUpload] Ingestion failed for {raw_name}: {e}")
+            results.append({
+                "filename": file.filename,
+                "stored_as": raw_name,
+                "status": "partial",
+                "message": f"Saved but ingestion error: {str(e)[:120]}",
+                "entities": None,
+            })
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    error_count = sum(1 for r in results if r["status"] == "error")
+    skipped_count = sum(1 for r in results if r["status"] == "skipped")
+
+    return {
+        "status": "complete",
+        "total": len(results),
+        "success": success_count,
+        "errors": error_count,
+        "skipped": skipped_count,
+        "files": results,
+    }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

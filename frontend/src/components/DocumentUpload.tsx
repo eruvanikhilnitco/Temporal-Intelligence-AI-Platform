@@ -1,8 +1,8 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import {
   Upload, FileText, CheckCircle, AlertCircle, Loader2, X,
   GitBranch, Brain, Database, ChevronDown, ChevronUp, Link2,
-  Cloud, FolderOpen, Play, RefreshCw
+  Cloud, FolderOpen, Play, RefreshCw, Folder
 } from "lucide-react";
 import axios from "axios";
 
@@ -19,7 +19,7 @@ interface UploadedFile {
   };
 }
 
-const ALLOWED = [".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html"];
+const ALLOWED = [".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"];
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -285,10 +285,195 @@ function SharePointConnector() {
   );
 }
 
+// ── Folder Upload Component ───────────────────────────────────────────────────
+interface FolderFileResult {
+  path: string;
+  name: string;
+  status: "pending" | "uploading" | "success" | "error" | "skipped";
+  message?: string;
+}
+
+function FolderUpload() {
+  const [results, setResults] = useState<FolderFileResult[]>([]);
+  const [running, setRunning] = useState(false);
+  const [summary, setSummary] = useState<{ success: number; errors: number; skipped: number } | null>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleFolderSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const allFiles = Array.from(fileList);
+
+    // Build display list
+    const initial: FolderFileResult[] = allFiles.map(f => ({
+      path: (f as any).webkitRelativePath || f.name,
+      name: f.name,
+      status: "pending",
+    }));
+    setResults(initial);
+    setSummary(null);
+    setRunning(true);
+
+    try {
+      const token = localStorage.getItem("accessToken");
+      const formData = new FormData();
+
+      // Use webkitRelativePath as the filename so the server preserves folder structure
+      for (const file of allFiles) {
+        const relativePath = (file as any).webkitRelativePath || file.name;
+        // Create a new File with the relative path as name so server can reconstruct
+        const renamedFile = new File([file], relativePath, { type: file.type });
+        formData.append("files", renamedFile);
+      }
+
+      // Mark all as uploading
+      setResults(prev => prev.map(r => ({ ...r, status: "uploading" })));
+
+      const res = await axios.post("/upload/batch", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      const data = res.data;
+      const fileResults: FolderFileResult[] = (data.files || []).map((f: any) => ({
+        path: f.filename,
+        name: f.filename.split("/").pop() || f.filename,
+        status: f.status as FolderFileResult["status"],
+        message: f.message,
+      }));
+
+      setResults(fileResults);
+      setSummary({ success: data.success, errors: data.errors, skipped: data.skipped });
+    } catch (err: any) {
+      setResults(prev => prev.map(r => ({
+        ...r,
+        status: "error",
+        message: err.response?.data?.detail || "Upload failed",
+      })));
+    } finally {
+      setRunning(false);
+      // Reset input so the same folder can be re-selected
+      if (folderInputRef.current) folderInputRef.current.value = "";
+    }
+  }
+
+  const statusIcon = (status: FolderFileResult["status"]) => {
+    if (status === "uploading") return <Loader2 size={13} className="text-brand-400 animate-spin" />;
+    if (status === "success")   return <CheckCircle size={13} className="text-emerald-400" />;
+    if (status === "error")     return <AlertCircle size={13} className="text-red-400" />;
+    if (status === "skipped")   return <AlertCircle size={13} className="text-yellow-400" />;
+    return <div className="w-3 h-3 rounded-full border border-gray-600" />;
+  };
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-lg font-bold text-white">Folder Upload</h2>
+        <p className="text-sm text-gray-400 mt-1">
+          Select a folder (including nested sub-folders) — all supported documents inside will be
+          ingested automatically into the vector store and knowledge graph.
+        </p>
+      </div>
+
+      {/* Drop zone / button */}
+      <div
+        onClick={() => folderInputRef.current?.click()}
+        className="relative border-2 border-dashed border-gray-700 hover:border-brand-500 hover:bg-brand-600/5 rounded-2xl p-12 text-center transition cursor-pointer"
+      >
+        <Folder size={40} className="mx-auto mb-4 text-gray-500" />
+        <p className="text-base font-medium text-white mb-1">Click to select a folder</p>
+        <p className="text-sm text-gray-400 mb-3">All files in nested sub-folders are included</p>
+        <div className="flex flex-wrap justify-center gap-2">
+          {ALLOWED.map(ext => (
+            <span key={ext} className="text-xs bg-gray-800 border border-gray-700 text-gray-400 px-2 py-0.5 rounded-full">{ext}</span>
+          ))}
+        </div>
+        {/* webkitdirectory allows folder selection with full recursive file list */}
+        <input
+          ref={folderInputRef}
+          type="file"
+          className="hidden"
+          multiple
+          // @ts-ignore — webkitdirectory is not in standard types but works in all browsers
+          webkitdirectory=""
+          onChange={handleFolderSelect}
+        />
+      </div>
+
+      {/* How it works */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+        <p className="text-xs font-medium text-gray-300 mb-3 flex items-center gap-1.5">
+          <FolderOpen size={13} className="text-brand-400" /> How Folder Upload Works
+        </p>
+        <div className="space-y-1.5 text-xs text-gray-400">
+          {[
+            "Select any folder — the browser reads the entire tree recursively",
+            "All supported file types are detected and uploaded",
+            "Unsupported files (.exe, .zip, etc.) are automatically skipped",
+            "Each file is embedded into Qdrant and added to the knowledge graph",
+            "Cross-document relationships are automatically detected and linked",
+            "Folder structure is preserved in file naming for traceability",
+          ].map((s, i) => (
+            <div key={i} className="flex items-start gap-2">
+              <span className="text-brand-400 font-bold shrink-0">{i + 1}.</span> {s}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Summary */}
+      {summary && (
+        <div className={`border rounded-xl p-4 ${summary.errors === 0 ? "bg-emerald-500/5 border-emerald-500/20" : "bg-yellow-500/5 border-yellow-500/20"}`}>
+          <p className="text-sm font-semibold text-white mb-3">Upload Complete</p>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div className="bg-gray-800 rounded-lg px-3 py-2">
+              <p className="text-xl font-bold text-emerald-400">{summary.success}</p>
+              <p className="text-xs text-gray-400">Ingested</p>
+            </div>
+            <div className="bg-gray-800 rounded-lg px-3 py-2">
+              <p className="text-xl font-bold text-yellow-400">{summary.skipped}</p>
+              <p className="text-xs text-gray-400">Skipped</p>
+            </div>
+            <div className="bg-gray-800 rounded-lg px-3 py-2">
+              <p className="text-xl font-bold text-red-400">{summary.errors}</p>
+              <p className="text-xs text-gray-400">Errors</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* File list */}
+      {results.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-gray-400">{results.length} file{results.length !== 1 ? "s" : ""} detected</p>
+          <div className="max-h-72 overflow-y-auto space-y-1 pr-1">
+            {results.map((r, i) => (
+              <div key={i} className="flex items-center gap-3 bg-gray-800/60 border border-gray-700 rounded-lg px-3 py-2">
+                <div className="shrink-0">{statusIcon(r.status)}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-white truncate font-mono">{r.path}</p>
+                  {r.message && (
+                    <p className={`text-xs mt-0.5 ${r.status === "success" ? "text-emerald-400" : r.status === "skipped" ? "text-yellow-400" : "text-red-400"}`}>
+                      {r.message}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function DocumentUpload() {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [activeTab, setActiveTab] = useState<"files" | "sharepoint" | "etl">("files");
+  const [activeTab, setActiveTab] = useState<"files" | "folder" | "sharepoint" | "etl">("files");
 
   const processFile = useCallback(async (file: File) => {
     const entry: UploadedFile = { name: file.name, size: file.size, status: "uploading" };
@@ -339,6 +524,7 @@ export default function DocumentUpload() {
       <div className="flex gap-1 border-b border-gray-800 px-6 pt-1 shrink-0">
         {[
           { id: "files", label: "Local Files" },
+          { id: "folder", label: "Folder Upload" },
           { id: "sharepoint", label: "SharePoint" },
           { id: "etl", label: "ETL Pipeline" },
         ].map(({ id, label }) => (
@@ -359,7 +545,7 @@ export default function DocumentUpload() {
             <div>
               <h2 className="text-lg font-bold text-white">Document Upload</h2>
               <p className="text-sm text-gray-400 mt-1">
-                Supports PDF, XML, DOCX, TXT, JSON, CSV · Each file is embedded into Qdrant and the knowledge graph is auto-built.
+                Supports PDF, XML, DOCX, TXT, JSON, CSV, HTML, PPTX, MD · Each file is embedded into Qdrant and the knowledge graph is auto-built. Use the Folder Upload tab to upload entire directory trees.
               </p>
             </div>
 
@@ -418,6 +604,9 @@ export default function DocumentUpload() {
             )}
           </>
         )}
+
+        {/* ── FOLDER UPLOAD ── */}
+        {activeTab === "folder" && <FolderUpload />}
 
         {/* ── SHAREPOINT ── */}
         {activeTab === "sharepoint" && <SharePointConnector />}

@@ -89,28 +89,22 @@ class Phase1Pipeline:
 
         return all_chunks
 
-    # 🔥 FULLY DYNAMIC RBAC (CONTENT + FILE BASED)
+    # RBAC — default is admin-only. Admin explicitly grants broader access via API.
     def _infer_access_roles(self, file_path: str, text: str) -> List[str]:
-        name = file_path.lower()
+        """
+        Default: every uploaded document starts as admin-only.
+        Admin can widen access per document via PUT /admin/document/access.
+
+        Only auto-promote if the document explicitly signals public/open intent
+        (e.g., a public FAQ or press release). This avoids accidental data leakage.
+        """
         text_lower = text.lower()
 
-        # 🔐 HIGHLY SENSITIVE
-        if any(keyword in text_lower for keyword in [
-            "confidential", "password", "ssn", "private", "restricted"
-        ]):
-            return ["admin"]
+        # Explicitly public / open documents (opt-in only)
+        PUBLIC_SIGNALS = ["public release", "press release", "for immediate release",
+                          "open source", "publicly available"]
+        if any(sig in text_lower for sig in PUBLIC_SIGNALS):
+            return ["public", "user", "admin"]
 
-        # ⚠️ MEDIUM SENSITIVE (contracts, internal docs)
-        if any(keyword in text_lower for keyword in [
-            "contract", "agreement", "internal", "policy"
-        ]):
-            return ["user", "admin"]
-
-        # 📁 FILE NAME BASED SIGNAL (optional)
-        if any(keyword in name for keyword in [
-            "internal", "confidential"
-        ]):
-            return ["user", "admin"]
-
-        # 🌍 DEFAULT (PUBLIC)
-        return ["public", "user", "admin"]
+        # Default: admin-only. Secure by default.
+        return ["admin"]
