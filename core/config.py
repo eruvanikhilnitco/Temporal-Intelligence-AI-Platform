@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
 
     # ---------------- MODELS ----------------
-    embedding_model: str = "BAAI/bge-large-en-v1.5"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
     spacy_model: str = "en_core_web_sm"
 
     # ---------------- API ----------------
@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     chatbot_max_sources: int = 8
     chatbot_max_context_chars: int = 12000
     chatbot_memory_turns: int = 6
+
+    # ---------------- PERFORMANCE ----------------
+    # Ingest queue: number of parallel worker threads (auto-detected at runtime if 0)
+    ingest_workers: int = 4
+    # Embedding cache: max vectors to keep in process memory
+    embed_cache_max: int = 5000
+    # Query cache: max entries before LRU eviction kicks in
+    cache_max_entries: int = 2000
+    # Query cache TTL in seconds (default 10 min)
+    cache_ttl: int = 600
+    # Qdrant batch upsert size
+    qdrant_batch_size: int = 256
 
     # ---------------- CONFIG ----------------
     class Config:

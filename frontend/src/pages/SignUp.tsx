@@ -87,11 +87,11 @@ export default function SignUp({ navigate, role }: SignUpProps) {
           )}
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white ${isAdmin ? "bg-red-600" : "bg-brand-600"}`}>
-              {isAdmin ? <Shield size={18} /> : "A"}
+              {isAdmin ? <Shield size={18} /> : "N"}
             </div>
             <div>
-              <p className="text-sm font-medium text-white">{isAdmin ? "Admin Access" : "Aditya V."}</p>
-              <p className="text-xs text-gray-400">{isAdmin ? "Full system privileges" : "Lead Engineer, NITCO"}</p>
+              <p className="text-sm font-medium text-white">{isAdmin ? "Admin Access" : "Team Nitco Inc."}</p>
+              <p className="text-xs text-gray-400">{isAdmin ? "Full system privileges" : "Enterprise AI Platform"}</p>
             </div>
           </div>
         </div>

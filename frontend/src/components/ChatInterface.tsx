@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Send, Bot, User, Loader2, Network, FileText, ChevronDown, ChevronUp,
-  Copy, ThumbsUp, ThumbsDown, Sparkles, RefreshCw, CheckCircle, History
+  Copy, ThumbsUp, ThumbsDown, Sparkles, RefreshCw, CheckCircle, History, Square
 } from "lucide-react";
 import RoleSelector from "./RoleSelector";
 import axios from "axios";
@@ -254,6 +254,7 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
   const [history, setHistory] = useState<any[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -338,6 +339,13 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
     }
   }
 
+  function handleStop() {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  }
+
   async function handleSend(questionOverride?: string) {
     const q = (questionOverride ?? input).trim();
     if (!q || loading) return;
@@ -362,6 +370,10 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
       streaming: true,
     }]);
 
+    // Create AbortController for this request
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
       const token = localStorage.getItem("accessToken");
       const headers: any = { "Content-Type": "application/json" };
@@ -371,6 +383,7 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
         method: "POST",
         headers,
         body: JSON.stringify({ question: q, role }),
+        signal: controller.signal,
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -391,17 +404,29 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
       );
 
       await streamContent(aiId, data.answer);
-    } catch (err) {
-      setMessages(prev =>
-        prev.map(m => m.id === aiId ? {
-          ...m,
-          content: "**Error:** Could not reach the API. Please ensure the backend is running on port 8000.",
-          streaming: false,
-          confidence: 0,
-        } : m)
-      );
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        setMessages(prev =>
+          prev.map(m => m.id === aiId ? {
+            ...m,
+            content: "_Response stopped by user._",
+            streaming: false,
+            confidence: 0,
+          } : m)
+        );
+      } else {
+        setMessages(prev =>
+          prev.map(m => m.id === aiId ? {
+            ...m,
+            content: "**Error:** Could not reach the API. Please ensure the backend is running on port 8000.",
+            streaming: false,
+            confidence: 0,
+          } : m)
+        );
+      }
     } finally {
       setLoading(false);
+      abortControllerRef.current = null;
     }
   }
 
@@ -520,10 +545,18 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
                 }}
               />
             </div>
-            <button onClick={() => handleSend()} disabled={!input.trim() || loading}
-              className="bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl p-3 transition shrink-0 shadow-lg shadow-brand-600/20">
-              {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-            </button>
+            {loading ? (
+              <button onClick={handleStop}
+                className="bg-red-600 hover:bg-red-500 text-white rounded-xl p-3 transition shrink-0 shadow-lg shadow-red-600/20"
+                title="Stop generating">
+                <Square size={18} />
+              </button>
+            ) : (
+              <button onClick={() => handleSend()} disabled={!input.trim()}
+                className="bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl p-3 transition shrink-0 shadow-lg shadow-brand-600/20">
+                <Send size={18} />
+              </button>
+            )}
           </div>
           <p className="text-xs text-gray-600 text-center mt-2">
             {isAdmin

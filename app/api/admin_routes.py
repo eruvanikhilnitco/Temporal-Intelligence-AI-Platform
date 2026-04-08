@@ -312,6 +312,27 @@ def get_graph_data(
         return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0}
 
 
+@router.post("/graph/prune")
+def prune_graph(
+    min_weight: float = Query(0.2, ge=0.0, le=1.0, description="Remove edges with weight below this"),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Prune the SQLite graph: delete low-confidence edges (weight < min_weight)
+    and orphan nodes, then run ANALYZE + VACUUM to reclaim space.
+    Returns counts of deleted rows.
+    """
+    try:
+        from services.graph_service import GraphService
+        gs = GraphService()
+        result = gs.prune_graph(min_weight=min_weight)
+        gs.vacuum()
+        return {**result, "vacuum": True, "min_weight_threshold": min_weight}
+    except Exception as e:
+        logger.error(f"Graph prune failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e)[:200])
+
+
 @router.get("/graph/search")
 def search_graph(
     keyword: str,
@@ -815,6 +836,103 @@ def list_uploaded_documents(current_user: dict = Depends(require_admin)):
             "extension": Path(fname).suffix.lower(),
         })
     return {"files": result, "total": len(result)}
+
+
+# ── Cache stats ──────────────────────────────────────────────────────────────
+
+@router.get("/cache/stats")
+def cache_stats(current_user: dict = Depends(require_admin)):
+    """Return cache hit/miss statistics and memory usage."""
+    try:
+        from app.services.rag_service import _get_rag
+        rag = _get_rag()
+        if rag and hasattr(rag, "cache"):
+            return rag.cache.stats() | {"memory_kb": rag.cache.memory_usage_kb()}
+        return {"hits": 0, "misses": 0, "total_requests": 0, "hit_rate_pct": 0.0,
+                "active_entries": 0, "memory_kb": 0.0}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.delete("/cache")
+def clear_cache(current_user: dict = Depends(require_admin)):
+    """Clear the in-memory query cache."""
+    try:
+        from app.services.rag_service import _get_rag
+        rag = _get_rag()
+        if rag and hasattr(rag, "cache"):
+            rag.cache.clear()
+        return {"status": "cleared"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# ── Document delete ───────────────────────────────────────────────────────────
+
+@router.delete("/document/{filename:path}")
+def delete_document(filename: str, current_user: dict = Depends(require_admin)):
+    """
+    Delete a document: removes from Qdrant (all chunks), uploaded_docs folder,
+    and logs the action. Filename may include path segments.
+    """
+    import os
+    from pathlib import Path
+
+    deleted_vectors = 0
+    deleted_file = False
+    errors = []
+
+    # 1. Remove chunks from all Qdrant collections
+    try:
+        from core.database import get_qdrant_connection
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        cfg = get_qdrant_connection()
+        client = QdrantClient(host=cfg.host, port=cfg.port)
+        cols = client.get_collections().collections
+
+        for col in cols:
+            try:
+                # Try matching by file_name OR filename payload field
+                for field_key in ("file_name", "filename"):
+                    result = client.delete(
+                        collection_name=col.name,
+                        points_selector=Filter(
+                            must=[FieldCondition(key=field_key, match=MatchValue(value=filename))]
+                        ),
+                    )
+                    if result and getattr(result, "deleted_count", 0):
+                        deleted_vectors += result.deleted_count
+            except Exception as e:
+                errors.append(f"Qdrant {col.name}: {e}")
+    except Exception as e:
+        errors.append(f"Qdrant connection: {e}")
+
+    # 2. Delete physical file
+    upload_dirs = [Path("uploaded_docs"), Path("uploads")]
+    for udir in upload_dirs:
+        candidate = udir / filename
+        if candidate.exists():
+            try:
+                candidate.unlink()
+                deleted_file = True
+                logger.info("[Admin] Deleted file: %s", candidate)
+            except Exception as e:
+                errors.append(f"File delete: {e}")
+
+    logger.info(
+        "[Admin] %s deleted document '%s' — vectors=%d file=%s",
+        current_user.get("email"), filename, deleted_vectors, deleted_file,
+    )
+
+    return {
+        "status": "deleted",
+        "filename": filename,
+        "deleted_vectors": deleted_vectors,
+        "deleted_file": deleted_file,
+        "errors": errors,
+    }
 
 
 # ── System health ─────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ SOLID:
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -175,7 +176,7 @@ def batch_embed(texts: List[str], embedder) -> List[List[float]]:
         vectors = embedder.model.encode(
             texts,
             normalize_embeddings=True,
-            batch_size=32,
+            batch_size=64,
             show_progress_bar=False,
         )
         return [v.tolist() for v in vectors]
@@ -187,11 +188,17 @@ def batch_embed(texts: List[str], embedder) -> List[List[float]]:
 # ── Singleton ──────────────────────────────────────────────────────────────────
 
 _queue_instance: Optional[IngestQueue] = None
+_queue_lock = threading.Lock()
+
+# Default: min(cpu_count, 4) workers so 100-file batches process in parallel
+_DEFAULT_WORKERS = min(os.cpu_count() or 2, 4)
 
 
 def get_ingest_queue() -> IngestQueue:
     global _queue_instance
     if _queue_instance is None:
-        _queue_instance = IngestQueue(workers=1)
-        _queue_instance.start()
+        with _queue_lock:
+            if _queue_instance is None:
+                _queue_instance = IngestQueue(workers=_DEFAULT_WORKERS)
+                _queue_instance.start()
     return _queue_instance

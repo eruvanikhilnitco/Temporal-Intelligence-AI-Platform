@@ -35,6 +35,21 @@ def get_neo4j_connection() -> Neo4jConnection:
     )
 
 
+def get_neo4j_driver(timeout: float = 2.0):
+    """
+    Return a Neo4j driver with a short connection timeout so requests never
+    block for minutes when Neo4j is unavailable. Falls back gracefully.
+    """
+    from neo4j import GraphDatabase
+    cfg = get_neo4j_connection()
+    return GraphDatabase.driver(
+        cfg.uri,
+        auth=(cfg.user, cfg.password),
+        connection_timeout=timeout,
+        max_connection_lifetime=60,
+    )
+
+
 #def get_postgres_connection() -> PostgresConnection:
     settings = get_settings()
     return PostgresConnection(

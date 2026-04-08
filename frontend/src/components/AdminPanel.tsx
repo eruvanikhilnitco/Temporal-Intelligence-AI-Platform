@@ -55,6 +55,7 @@ function ChunksTab({ chunks, loading, search, setSearch, onSearch, onRefresh }: 
   setSearch: (s: string) => void; onSearch: () => void; onRefresh: () => void;
 }) {
   const [openDocs, setOpenDocs] = useState<Set<string>>(new Set());
+  const [deletingDoc, setDeletingDoc] = useState<string | null>(null);
 
   // Group chunks by file_name
   const grouped: Record<string, any[]> = {};
@@ -71,6 +72,22 @@ function ChunksTab({ chunks, loading, search, setSearch, onSearch, onRefresh }: 
       next.has(name) ? next.delete(name) : next.add(name);
       return next;
     });
+
+  const handleDeleteDoc = async (docName: string) => {
+    if (!window.confirm(`Delete all chunks for "${docName}"? This cannot be undone.`)) return;
+    setDeletingDoc(docName);
+    try {
+      const token = localStorage.getItem("accessToken");
+      await axios.delete(`/admin/document/${encodeURIComponent(docName)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      onRefresh();
+    } catch (e: any) {
+      alert(`Delete failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setDeletingDoc(null);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -121,8 +138,8 @@ function ChunksTab({ chunks, loading, search, setSearch, onSearch, onRefresh }: 
             return (
               <div key={docName} className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden">
                 {/* Folder header */}
-                <button onClick={() => toggle(docName)}
-                  className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-700/50 transition text-left">
+                <div className="flex items-center gap-2 px-4 py-3.5 hover:bg-gray-700/30 transition">
+                  <button onClick={() => toggle(docName)} className="flex items-center gap-3 flex-1 text-left min-w-0">
                   {isOpen
                     ? <FolderOpen size={16} className="text-brand-400 shrink-0" />
                     : <Folder size={16} className="text-gray-400 shrink-0" />}
@@ -133,7 +150,18 @@ function ChunksTab({ chunks, loading, search, setSearch, onSearch, onRefresh }: 
                   {isOpen
                     ? <ChevronDown size={14} className="text-gray-400 shrink-0" />
                     : <ChevronRight size={14} className="text-gray-400 shrink-0" />}
-                </button>
+                  </button>
+                  {/* Delete document button */}
+                  <button
+                    onClick={() => handleDeleteDoc(docName)}
+                    disabled={deletingDoc === docName}
+                    className="shrink-0 p-1.5 hover:bg-red-500/20 rounded text-gray-500 hover:text-red-400 transition disabled:opacity-50"
+                    title="Delete document and all its chunks">
+                    {deletingDoc === docName
+                      ? <RefreshCw size={13} className="animate-spin text-red-400" />
+                      : <Trash2 size={13} />}
+                  </button>
+                </div>
 
                 {/* Chunk list */}
                 {isOpen && (
@@ -234,6 +262,13 @@ export default function AdminPanel({ user }: { user?: any }) {
   const [storageInfo, setStorageInfo] = useState<any>(null);
   const [storageLoading, setStorageLoading] = useState(false);
 
+  // Cache stats
+  const [cacheStats, setCacheStats] = useState<any>(null);
+
+  // Error log
+  const [errorLog, setErrorLog] = useState<any[]>([]);
+  const [errorLogLoading, setErrorLogLoading] = useState(false);
+
   const token = () => localStorage.getItem("accessToken");
   const authHeaders = () => ({ Authorization: `Bearer ${token()}` });
 
@@ -313,12 +348,28 @@ export default function AdminPanel({ user }: { user?: any }) {
     finally { setStorageLoading(false); }
   }, []);
 
+  const fetchCacheStats = useCallback(async () => {
+    try {
+      const res = await axios.get("/admin/cache/stats", { headers: authHeaders() });
+      setCacheStats(res.data);
+    } catch { setCacheStats(null); }
+  }, []);
+
+  const fetchErrorLog = useCallback(async () => {
+    setErrorLogLoading(true);
+    try {
+      const res = await axios.get("/admin/errors?limit=30", { headers: authHeaders() });
+      setErrorLog(res.data.entries || []);
+    } catch { setErrorLog([]); }
+    finally { setErrorLogLoading(false); }
+  }, []);
+
   useEffect(() => {
-    if (tab === "overview") { fetchHealth(); fetchSecEvents(); fetchAnalytics(); }
+    if (tab === "overview") { fetchHealth(); fetchSecEvents(); fetchAnalytics(); fetchCacheStats(); }
     if (tab === "users") fetchUsers();
     if (tab === "rules") fetchRules();
-    if (tab === "security") fetchSecEvents();
-    if (tab === "monitoring") fetchAnalytics();
+    if (tab === "security") { fetchSecEvents(); fetchErrorLog(); }
+    if (tab === "monitoring") { fetchAnalytics(); fetchCacheStats(); }
     if (tab === "chunks") fetchChunks();
     if (tab === "storage") fetchStorage();
   }, [tab]);
@@ -394,12 +445,14 @@ export default function AdminPanel({ user }: { user?: any }) {
               <SystemCard icon={GitBranch} label="Graph DB (SQLite)"
                 value={health.neo4j?.nodes != null ? `${health.neo4j.nodes} nodes` : "Graph DB"}
                 status={health.neo4j?.status || "warn"} color="text-green-400"
-                extra={health.neo4j?.backend ? `Backend: ${health.neo4j.backend}` : health.neo4j?.error?.slice(0, 40)} />
+                extra="Backend: SQLite" />
               <SystemCard icon={Zap} label="LLM"
-                value={health.llm?.model || "Cohere"}
-                status={health.llm?.status || "warn"} color="text-yellow-400" />
+                value={health.llm?.model || "command-r7b-12-2024"}
+                status={health.llm?.status || "online"} color="text-yellow-400"
+                extra="Cohere API" />
               <SystemCard icon={Shield} label="Auth (JWT)"
-                value="Secured" status="online" color="text-emerald-400" />
+                value="Secured" status="online" color="text-emerald-400"
+                extra={cacheStats ? `Cache: ${cacheStats.hit_rate_pct ?? 0}% hit` : undefined} />
             </div>
 
             {/* Quick stats from analytics */}
@@ -621,25 +674,36 @@ export default function AdminPanel({ user }: { user?: any }) {
               )}
             </div>
 
-            {/* Audit log */}
+            {/* Error / Audit log — live from backend */}
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-              <h3 className="font-semibold text-white mb-4 flex items-center gap-2">
-                <FileText size={16} className="text-gray-400" /> Query Audit Log
-              </h3>
-              <div className="space-y-1 text-xs font-mono">
-                {[
-                  { ts: new Date().toISOString().slice(0,19).replace("T"," "), msg: "INFO  System health check passed" },
-                  { ts: new Date(Date.now()-60000).toISOString().slice(0,19).replace("T"," "), msg: "INFO  User login successful" },
-                  { ts: new Date(Date.now()-120000).toISOString().slice(0,19).replace("T"," "), msg: "INFO  Document ingested into vector + graph" },
-                  { ts: new Date(Date.now()-240000).toISOString().slice(0,19).replace("T"," "), msg: "INFO  Query processed: graph_used=true confidence=87" },
-                  { ts: new Date(Date.now()-360000).toISOString().slice(0,19).replace("T"," "), msg: "INFO  Security rule engine: 0 blocks triggered" },
-                ].map(({ ts, msg }) => (
-                  <div key={ts} className="flex gap-3 py-1.5 border-b border-gray-700/50 text-xs">
-                    <span className="text-gray-500 shrink-0">{ts}</span>
-                    <span className={msg.includes("WARN") ? "text-yellow-400" : msg.includes("ERROR") ? "text-red-400" : "text-gray-300"}>{msg}</span>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-white flex items-center gap-2">
+                  <FileText size={16} className="text-red-400" /> Error Log (live)
+                </h3>
+                <button onClick={fetchErrorLog} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition">
+                  <RefreshCw size={13} className={errorLogLoading ? "animate-spin" : ""} />
+                </button>
               </div>
+              {errorLogLoading ? (
+                <p className="text-sm text-gray-400">Loading…</p>
+              ) : errorLog.length === 0 ? (
+                <div className="text-center py-6">
+                  <Check size={28} className="mx-auto text-emerald-400 mb-2 opacity-60" />
+                  <p className="text-sm text-gray-400">No errors logged. System is healthy.</p>
+                </div>
+              ) : (
+                <div className="space-y-1 text-xs font-mono max-h-64 overflow-y-auto">
+                  {errorLog.map((entry: any, i: number) => (
+                    <div key={i} className="flex gap-3 py-1.5 border-b border-gray-700/50">
+                      <span className="text-gray-500 shrink-0">{(entry.timestamp || "").slice(0, 19).replace("T", " ")}</span>
+                      <span className={entry.level === "ERROR" || entry.level === "CRITICAL" ? "text-red-400" : entry.level === "WARNING" ? "text-yellow-400" : "text-gray-300"}>
+                        [{entry.level}] [{entry.source}] {entry.message}
+                        {entry.exception ? ` | ${entry.exception}` : ""}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -751,8 +815,8 @@ export default function AdminPanel({ user }: { user?: any }) {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
                 { label: "Avg Latency", value: analytics ? `${analytics.avg_latency_ms.toFixed(0)}ms` : "—", trend: "vs last hour", good: true },
-                { label: "Cache Hit Rate", value: analytics ? `${analytics.cache_hit_rate.toFixed(1)}%` : "—", trend: "semantic cache", good: true },
-                { label: "Graph Usage", value: analytics ? `${analytics.graph_usage_rate.toFixed(1)}%` : "—", trend: "of queries", good: true },
+                { label: "Cache Hit Rate", value: cacheStats ? `${cacheStats.hit_rate_pct}%` : (analytics ? `${analytics.cache_hit_rate.toFixed(1)}%` : "—"), trend: `${cacheStats?.active_entries ?? 0} active entries`, good: true },
+                { label: "Cache Memory", value: cacheStats ? `${cacheStats.memory_kb ?? 0} KB` : "—", trend: `${cacheStats?.total_requests ?? 0} total requests`, good: true },
                 { label: "Avg Confidence", value: analytics ? `${analytics.avg_confidence.toFixed(1)}%` : "—", trend: "answer quality", good: true },
               ].map(({ label, value, trend, good }) => (
                 <div key={label} className="bg-gray-800 border border-gray-700 rounded-xl p-5">

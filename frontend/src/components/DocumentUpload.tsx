@@ -9,7 +9,7 @@ import axios from "axios";
 interface UploadedFile {
   name: string;
   size: number;
-  status: "uploading" | "success" | "error";
+  status: "uploading" | "success" | "queued" | "error";
   message?: string;
   entities?: {
     contracts: string[];
@@ -41,7 +41,7 @@ function KnowledgeGraphPipeline({ entities }: { entities: UploadedFile["entities
       {open && (
         <div className="mt-2 space-y-2">
           <div className="flex items-center gap-2 text-xs text-gray-400 flex-wrap">
-            {["NER Extraction", "Relationship Mapping", "Graph Storage (Neo4j)", "Chunk Linking"].map((step, i) => (
+            {["NER Extraction", "Relationship Mapping", "Graph Storage (SQLite)", "Vector Chunk Linking"].map((step, i) => (
               <span key={step} className="flex items-center gap-1">
                 <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full">{step}</span>
                 {i < 3 && <span className="text-gray-600">→</span>}
@@ -72,6 +72,7 @@ function KnowledgeGraphPipeline({ entities }: { entities: UploadedFile["entities
 }
 
 function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void }) {
+  const isQueued = file.status === "queued";
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
       <div className="flex items-start gap-3">
@@ -83,7 +84,7 @@ function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void
             <p className="text-sm text-white font-medium truncate">{file.name}</p>
             <div className="flex items-center gap-2 shrink-0">
               {file.status === "uploading" && <Loader2 size={14} className="text-brand-400 animate-spin" />}
-              {file.status === "success" && <CheckCircle size={14} className="text-emerald-400" />}
+              {(file.status === "success" || isQueued) && <CheckCircle size={14} className="text-emerald-400" />}
               {file.status === "error" && <AlertCircle size={14} className="text-red-400" />}
               <button onClick={onRemove} className="text-gray-500 hover:text-gray-300 transition"><X size={14} /></button>
             </div>
@@ -94,15 +95,78 @@ function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void
               <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
                 <div className="h-1 bg-brand-500 rounded-full animate-pulse w-3/4" />
               </div>
-              <p className="text-xs text-gray-400 mt-1">Embedding + graph ingestion…</p>
+              <p className="text-xs text-gray-400 mt-1">Uploading…</p>
             </div>
           )}
-          {file.message && file.status !== "uploading" && (
+          {isQueued && (
+            <div className="mt-2">
+              <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
+                <div className="h-1 bg-emerald-500 rounded-full w-full" />
+              </div>
+              <p className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
+                <RefreshCw size={10} className="animate-spin" />
+                Queued — background ingestion running (embedding + graph)…
+              </p>
+            </div>
+          )}
+          {file.message && !["uploading", "queued"].includes(file.status) && (
             <p className={`text-xs mt-1 ${file.status === "success" ? "text-emerald-400" : "text-red-400"}`}>{file.message}</p>
           )}
-          {file.status === "success" && <KnowledgeGraphPipeline entities={file.entities} />}
+          {(file.status === "success" || isQueued) && <KnowledgeGraphPipeline entities={file.entities} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Ingest Queue Status ───────────────────────────────────────────────────────
+function IngestQueueStatus() {
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem("accessToken");
+      const res = await axios.get("/upload/status/all", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      setJobs(Array.isArray(res.data) ? res.data : []);
+    } catch { setJobs([]); }
+    finally { setLoading(false); }
+  };
+
+  const statusColor: Record<string, string> = {
+    done: "text-emerald-400",
+    processing: "text-yellow-400",
+    queued: "text-blue-400",
+    error: "text-red-400",
+  };
+
+  return (
+    <div className="bg-gray-800/60 border border-gray-700 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-semibold text-white flex items-center gap-2">
+          <RefreshCw size={14} className="text-brand-400" /> Background Ingest Queue
+        </p>
+        <button onClick={load} disabled={loading}
+          className="text-xs text-gray-400 hover:text-white flex items-center gap-1 transition">
+          <RefreshCw size={11} className={loading ? "animate-spin" : ""} /> Refresh
+        </button>
+      </div>
+      {jobs.length === 0 ? (
+        <p className="text-xs text-gray-500">No recent ingest jobs. Upload a file to see queue activity.</p>
+      ) : (
+        <div className="space-y-2 max-h-48 overflow-y-auto">
+          {jobs.map((j: any) => (
+            <div key={j.job_id} className="flex items-center gap-3 text-xs">
+              <span className={`font-medium shrink-0 w-16 ${statusColor[j.status] || "text-gray-400"}`}>{j.status}</span>
+              <span className="text-gray-300 flex-1 truncate font-mono">{j.file?.split("/").pop() || j.file}</span>
+              {j.elapsed_s && <span className="text-gray-500 shrink-0">{j.elapsed_s}s</span>}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -273,7 +337,7 @@ function SharePointConnector() {
             "Recursively traverses every subfolder at any depth",
             "Downloads each file and runs it through the ingestion pipeline",
             "Embeds chunks into Qdrant vector store",
-            "Extracts entities and builds knowledge graph in Neo4j",
+            "Extracts entities and builds knowledge graph (SQLite / Neo4j)",
           ].map((s, i) => (
             <div key={i} className="flex items-start gap-2">
               <span className="text-brand-400 font-bold shrink-0">{i + 1}.</span> {s}
@@ -413,7 +477,7 @@ function FolderUpload() {
             "Select any folder — the browser reads the entire tree recursively",
             "All supported file types are detected and uploaded",
             "Unsupported files (.exe, .zip, etc.) are automatically skipped",
-            "Each file is embedded into Qdrant and added to the knowledge graph",
+            "Each file is embedded into Qdrant and added to the knowledge graph (SQLite)",
             "Cross-document relationships are automatically detected and linked",
             "Folder structure is preserved in file naming for traceability",
           ].map((s, i) => (
@@ -489,10 +553,13 @@ export default function DocumentUpload() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
+      const newStatus = (res.data.status === "success" || res.data.status === "queued")
+        ? res.data.status as "success" | "queued"
+        : "error";
       setFiles(prev => prev.map(f =>
         f.name === file.name ? {
           ...f,
-          status: res.data.status === "success" ? "success" : "error",
+          status: newStatus,
           message: res.data.message,
           entities: res.data.entities,
         } : f
@@ -571,15 +638,18 @@ export default function DocumentUpload() {
             </div>
 
             <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
-              <p className="text-xs font-medium text-gray-300 mb-3">Document Processing Pipeline</p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-medium text-gray-300">Document Processing Pipeline</p>
+                <span className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">Async / Non-blocking</span>
+              </div>
               <div className="flex items-center gap-2 flex-wrap">
                 {[
+                  { icon: Upload, label: "Queue", color: "text-brand-400" },
                   { icon: FileText, label: "Parse & Chunk", color: "text-blue-400" },
-                  { icon: Brain, label: "Embed (BAAI)", color: "text-violet-400" },
-                  { icon: Database, label: "Store (Qdrant)", color: "text-blue-400" },
-                  { icon: GitBranch, label: "NER Extraction", color: "text-emerald-400" },
-                  { icon: Link2, label: "Build Graph", color: "text-emerald-400" },
-                  { icon: CheckCircle, label: "Ready to Query", color: "text-emerald-400" },
+                  { icon: Brain, label: "Embed (BAAI 1024d)", color: "text-violet-400" },
+                  { icon: Database, label: "Qdrant Store", color: "text-blue-400" },
+                  { icon: GitBranch, label: "NER + Graph", color: "text-emerald-400" },
+                  { icon: CheckCircle, label: "Searchable", color: "text-emerald-400" },
                 ].map(({ icon: Icon, label, color }, i, arr) => (
                   <span key={label} className="flex items-center gap-2">
                     <span className="flex items-center gap-1.5 text-xs text-gray-300">
@@ -615,30 +685,86 @@ export default function DocumentUpload() {
         {activeTab === "etl" && (
           <>
             <div>
-              <h2 className="text-lg font-bold text-white">Advanced ETL Pipeline</h2>
-              <p className="text-sm text-gray-400 mt-1">Phase 3 — automated knowledge graph generation from raw documents.</p>
+              <h2 className="text-lg font-bold text-white">ETL Pipeline</h2>
+              <p className="text-sm text-gray-400 mt-1">
+                Full document ingestion pipeline — from raw file to searchable vector + knowledge graph.
+                All steps run asynchronously in the background after upload.
+              </p>
             </div>
+
+            {/* Architecture overview badge row */}
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: "Vector Store", value: "Qdrant", color: "text-blue-400 bg-blue-500/10 border-blue-500/20" },
+                { label: "Graph DB", value: "SQLite (Neo4j fallback)", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
+                { label: "LLM", value: "Cohere command-r7b", color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/20" },
+              ].map(({ label, value, color }) => (
+                <div key={label} className={`border rounded-xl p-3 text-center ${color}`}>
+                  <p className="text-xs font-bold">{value}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+                </div>
+              ))}
+            </div>
+
             <div className="space-y-4">
               {[
-                { step: "1", icon: FileText, title: "OCR & Text Extraction", desc: "Process scanned PDFs, images, and complex formats using Apache Tika + Tesseract OCR.", status: "active" },
-                { step: "2", icon: Brain, title: "Named Entity Recognition (NER)", desc: "spaCy NER pipeline extracts PERSON, ORG, DATE, MONEY, CONTRACT entities from text.", status: "active" },
-                { step: "3", icon: Link2, title: "Relationship Extraction", desc: "Regex + ML patterns detect relationships: CONTRACT→issued_by→ORG, CONTRACT→starts_on→DATE.", status: "active" },
-                { step: "4", icon: GitBranch, title: "Automatic Graph Generation", desc: "Extracted entities and relationships are stored as Neo4j nodes and edges automatically.", status: "active" },
-                { step: "5", icon: Database, title: "Chunk-to-Node Linking", desc: "Each vector chunk is linked to relevant graph nodes for unified retrieval.", status: "active" },
-              ].map(({ step, icon: Icon, title, desc, status }) => (
+                {
+                  step: "1", icon: Upload, title: "Async File Ingest Queue",
+                  desc: "Files are accepted instantly and queued for background processing. The upload returns immediately — no waiting for ingestion.",
+                  badge: "Non-blocking",
+                },
+                {
+                  step: "2", icon: FileText, title: "Parse & Chunk",
+                  desc: "Documents are parsed (PDF, DOCX, TXT, CSV, JSON, HTML, PPTX, XML, MD) and split into semantic chunks of ~512 tokens with overlap.",
+                  badge: "Active",
+                },
+                {
+                  step: "3", icon: Brain, title: "Embedding (BAAI/bge-large-en-v1.5)",
+                  desc: "Each chunk is embedded using a 1024-dim sentence transformer model. Batch embedding via batch_embed() for 10x throughput.",
+                  badge: "Active",
+                },
+                {
+                  step: "4", icon: Database, title: "Vector Store — Qdrant",
+                  desc: "Embeddings with metadata (filename, access_roles, document_type) are upserted into Qdrant collections for cosine similarity search.",
+                  badge: "Active",
+                },
+                {
+                  step: "5", icon: Brain, title: "NER — Named Entity Recognition",
+                  desc: "spaCy extracts PERSON, ORG, DATE, MONEY, and CONTRACT entities. Cohere LLM classifies document type and sensitivity.",
+                  badge: "Active",
+                },
+                {
+                  step: "6", icon: Link2, title: "Relationship Extraction",
+                  desc: "Regex + pattern rules detect relationships: CONTRACT→issued_by→ORG, DOCUMENT→starts_on→DATE, PARTY→signs→CONTRACT.",
+                  badge: "Active",
+                },
+                {
+                  step: "7", icon: GitBranch, title: "Graph Storage — SQLite / Neo4j",
+                  desc: "Entities and relationships stored in SQLite graph DB (primary). Neo4j used automatically when available at bolt://localhost:7687.",
+                  badge: "Active",
+                },
+                {
+                  step: "8", icon: CheckCircle, title: "Cache Warm & Ready",
+                  desc: "After ingestion, the in-memory TTL cache is primed. Subsequent identical queries are answered instantly from cache.",
+                  badge: "Active",
+                },
+              ].map(({ step, icon: Icon, title, desc, badge }) => (
                 <div key={step} className="flex gap-4">
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 bg-emerald-600/20 text-emerald-300 border border-emerald-500/30">{step}</div>
-                  <div className="flex-1 pb-4 border-b border-gray-800">
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 bg-brand-600/20 text-brand-300 border border-brand-500/30">{step}</div>
+                  <div className="flex-1 pb-4 border-b border-gray-800 last:border-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <Icon size={15} className="text-emerald-400" />
+                      <Icon size={15} className="text-brand-400" />
                       <p className="text-sm font-medium text-white">{title}</p>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">Active</span>
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">{badge}</span>
                     </div>
                     <p className="text-xs text-gray-400 leading-relaxed">{desc}</p>
                   </div>
                 </div>
               ))}
             </div>
+
+            {/* Ingest queue status */}
+            <IngestQueueStatus />
           </>
         )}
       </div>

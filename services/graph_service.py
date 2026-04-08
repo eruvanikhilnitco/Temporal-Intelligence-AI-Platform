@@ -65,8 +65,13 @@ class _Neo4jBackend(_GraphBackend):
 
     def __init__(self, uri: str, user: str, password: str):
         from neo4j import GraphDatabase
-        self._driver = GraphDatabase.driver(uri, auth=(user, password))
-        # Verify connectivity — raises if unreachable
+        # Short connection timeout so we fall back to SQLite quickly when Neo4j is absent
+        self._driver = GraphDatabase.driver(
+            uri, auth=(user, password),
+            connection_timeout=2.0,   # TCP connect timeout in seconds
+            max_connection_lifetime=60,
+        )
+        # Verify connectivity — raises if unreachable (respects connection_timeout)
         self._driver.verify_connectivity()
         self._ensure_constraints()
         logger.info("[GraphService] Connected to Neo4j at %s", uri)
@@ -226,6 +231,11 @@ _DB_PATH = str(Path(__file__).parent.parent / "cortexflow.db")
 def _sqlite_conn() -> sqlite3.Connection:
     c = sqlite3.connect(_DB_PATH, check_same_thread=False)
     c.row_factory = sqlite3.Row
+    # WAL mode: concurrent reads don't block writes; essential for multi-worker ingestion
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")  # faster writes, still crash-safe
+    c.execute("PRAGMA cache_size=-32000")   # 32 MB page cache
+    c.execute("PRAGMA temp_store=MEMORY")
     return c
 
 
@@ -247,6 +257,7 @@ def _init_sqlite_tables():
                 to_node    TEXT NOT NULL,
                 relation   TEXT NOT NULL,
                 source     TEXT,
+                weight     REAL DEFAULT 1.0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(from_node, relation, to_node)
             );
@@ -593,6 +604,54 @@ class GraphService:
         Returns flat list of {path, relations, source} dicts.
         """
         return self._backend.multi_hop_query(entity_name, max_hops)
+
+    def prune_graph(self, min_weight: float = 0.2, max_hops: int = 2) -> Dict:
+        """
+        Remove low-confidence edges and orphan nodes to keep the graph lean.
+        - Deletes edges with weight < min_weight (defaults to 0.2)
+        - Deletes nodes with no remaining edges (orphans)
+        - Returns counts of pruned rows for admin visibility.
+        Works for SQLite backend only; no-op for Neo4j (use Cypher pruning there).
+        """
+        if not isinstance(self._backend, _SQLiteBackend):
+            return {"pruned_edges": 0, "pruned_nodes": 0, "backend": self._backend.backend_name}
+        pruned_edges = 0
+        pruned_nodes = 0
+        try:
+            with _sqlite_conn() as c:
+                cur = c.execute(
+                    "DELETE FROM graph_edges WHERE weight < ?", (min_weight,)
+                )
+                pruned_edges = cur.rowcount
+                # Remove orphan nodes — nodes that no longer appear in any edge
+                cur2 = c.execute(
+                    "DELETE FROM graph_nodes WHERE name NOT IN ("
+                    "  SELECT from_node FROM graph_edges"
+                    "  UNION"
+                    "  SELECT to_node   FROM graph_edges"
+                    ")"
+                )
+                pruned_nodes = cur2.rowcount
+            logger.info(
+                "[GraphService] Pruned %d edges, %d orphan nodes", pruned_edges, pruned_nodes
+            )
+        except Exception as e:
+            logger.error("[GraphService] prune_graph failed: %s", e)
+        return {"pruned_edges": pruned_edges, "pruned_nodes": pruned_nodes, "backend": "sqlite"}
+
+    def vacuum(self) -> bool:
+        """Run VACUUM + ANALYZE to reclaim space and update query planner statistics."""
+        if not isinstance(self._backend, _SQLiteBackend):
+            return False
+        try:
+            with _sqlite_conn() as c:
+                c.execute("ANALYZE")
+                c.execute("VACUUM")
+            logger.info("[GraphService] VACUUM + ANALYZE complete")
+            return True
+        except Exception as e:
+            logger.error("[GraphService] vacuum failed: %s", e)
+            return False
 
     def store_document_metadata(self, doc_name: str, metadata: Dict) -> bool:
         """Store extracted metadata as graph nodes connected to the document node."""

@@ -9,11 +9,10 @@ from threading import Lock
 from urllib import error as url_error
 from urllib import request as url_request
 
-from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 
 from core.config import get_settings
-from core.database import get_neo4j_connection, get_qdrant_connection
+from core.database import get_neo4j_connection, get_neo4j_driver, get_qdrant_connection
 from services.embedding_service import EmbeddingService
 from services.lifecycle_service import LifecycleService
 from services.prediction_service import PredictionService
@@ -283,11 +282,7 @@ class ChatbotService:
         # For list questions about lifecycles, get documents efficiently in one query
         if is_list_question and (intent.get("lifecycle") or "lifecycle" in q_lower):
             try:
-                neo4j_config = get_neo4j_connection()
-                driver = GraphDatabase.driver(
-                    neo4j_config.uri,
-                    auth=(neo4j_config.user, neo4j_config.password)
-                )
+                driver = get_neo4j_driver()
                 try:
                     with driver.session() as session:
                         # Get lifecycles with document IDs from Neo4j
@@ -435,11 +430,7 @@ class ChatbotService:
                 else:
                     # Query all lifecycles efficiently with document counts
                     try:
-                        neo4j_config = get_neo4j_connection()
-                        driver = GraphDatabase.driver(
-                            neo4j_config.uri,
-                            auth=(neo4j_config.user, neo4j_config.password)
-                        )
+                        driver = get_neo4j_driver()
                         try:
                             with driver.session() as session:
                                 # Single efficient query to get lifecycles with document and event counts
@@ -511,11 +502,7 @@ class ChatbotService:
                 else:
                     # Get risk overview for all lifecycles
                     try:
-                        neo4j_config = get_neo4j_connection()
-                        driver = GraphDatabase.driver(
-                            neo4j_config.uri,
-                            auth=(neo4j_config.user, neo4j_config.password)
-                        )
+                        driver = get_neo4j_driver()
                         try:
                             with driver.session() as session:
                                 result = session.run("MATCH (l:Lifecycle) RETURN l.lifecycle_id as id LIMIT 10")
@@ -741,8 +728,7 @@ class ChatbotService:
 
         # Neo4j lifecycle/risk counts.
         try:
-            nconf = get_neo4j_connection()
-            driver = GraphDatabase.driver(nconf.uri, auth=(nconf.user, nconf.password))
+            driver = get_neo4j_driver()
             try:
                 with driver.session() as session:
                     lc_count = session.run("MATCH (l:Lifecycle) RETURN count(l) as c").single()

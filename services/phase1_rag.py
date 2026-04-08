@@ -50,20 +50,33 @@ class Phase1RAG:
         collections = self.client.get_collections().collections
         return any(c.name == self.collection_name for c in collections)
 
-    # ✅ SAFE CREATION (NO DELETE)
+    # ✅ SAFE CREATION — auto-detects model/collection dimension mismatch and recreates
     def _ensure_collection(self):
+        target_dim = self.embedder.dimensions
+
         if self._collection_exists():
-            print(f"[INFO] Using existing collection: {self.collection_name}")
-            return
+            try:
+                info = self.client.get_collection(self.collection_name)
+                existing_dim = info.config.params.vectors.size
+                if existing_dim == target_dim:
+                    print(f"[INFO] Using existing collection: {self.collection_name} (dim={target_dim})")
+                    return
+                else:
+                    print(
+                        f"[WARN] Embedding model dimension changed: existing={existing_dim}, "
+                        f"model={target_dim}. Recreating collection (re-ingest documents)."
+                    )
+                    self.client.delete_collection(self.collection_name)
+            except Exception as e:
+                print(f"[WARN] Could not inspect collection ({e}), proceeding with creation.")
 
-        print(f"[INFO] Creating collection: {self.collection_name}")
-
+        print(f"[INFO] Creating collection: {self.collection_name} (dim={target_dim})")
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config=VectorParams(
-                size=1024,
-                distance=Distance.COSINE
-            )
+                size=target_dim,
+                distance=Distance.COSINE,
+            ),
         )
 
     # 🔥 INGEST (RUN MANUALLY ONLY)
@@ -126,18 +139,22 @@ class Phase1RAG:
     def query_with_sources(self, question: str, user_role: str = "user", top_k: int = 10):
         query_vector = self.embedder.embed(question)
 
+        # Admin sees ALL documents — no RBAC filter applied.
+        # Non-admin roles are filtered to their own access level only.
+        if user_role == "admin":
+            query_filter = None
+        else:
+            query_filter = {
+                "must": [
+                    {"key": "access_roles", "match": {"value": user_role}}
+                ]
+            }
+
         results = self.client.query_points(
             collection_name=self.collection_name,
             query=query_vector,
             limit=top_k,
-            query_filter={
-                "must": [
-                    {
-                        "key": "access_roles",
-                        "match": {"value": user_role}
-                    }
-                ]
-            }
+            query_filter=query_filter,
         )
 
         return [

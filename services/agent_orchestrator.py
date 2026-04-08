@@ -25,6 +25,7 @@ Agent Tools:
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Dict, Any
 
@@ -264,19 +265,49 @@ class AgentOrchestrator:
         return state
 
     def _node_retrieve(self, state: AgentState) -> AgentState:
-        """Run selected retrieval tools in order."""
-        # Always run vector retrieval
-        doc_result = self.doc_tool.run(state.query, state.user_role)
-        if doc_result.success and doc_result.data:
-            # Multi-hop decomposition + reranking
-            sub_queries = self._decompose(state.query)
-            all_chunks = list(doc_result.data)
-            for sq in sub_queries[1:]:
-                sub_result = self.doc_tool.run(sq, state.user_role)
-                if sub_result.success:
-                    all_chunks.extend(sub_result.data)
-            # Rerank
-            unique_chunks = list(dict.fromkeys(all_chunks))
+        """Run retrieval tools — sub-queries and graph run in parallel threads."""
+        sub_queries = self._decompose(state.query)
+        all_chunks: List[str] = []
+
+        # Dispatch all sub-queries + optional graph concurrently
+        futures_map: Dict = {}
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            # One future per sub-query (primary + decomposed)
+            for sq in sub_queries:
+                f = pool.submit(self.doc_tool.run, sq, state.user_role)
+                futures_map[f] = ("doc", sq)
+
+            # Graph lookup runs in the same pool
+            if state.needs_graph and self.graph_tool:
+                f = pool.submit(self.graph_tool.run, state.query)
+                futures_map[f] = ("graph", state.query)
+
+            # Calculator is pure CPU — also parallel
+            if state.needs_calculator:
+                f = pool.submit(self.calculator.run, state.query)
+                futures_map[f] = ("calc", state.query)
+
+            for future in as_completed(futures_map):
+                kind, _ = futures_map[future]
+                try:
+                    result = future.result(timeout=10)
+                except Exception as exc:
+                    logger.warning("[Orchestrator] tool future error: %s", exc)
+                    continue
+
+                if kind == "doc" and result.success and result.data:
+                    all_chunks.extend(result.data)
+                elif kind == "graph" and result.success:
+                    state.graph_context = result.data.get("context", "")
+                    state.graph_entities = result.data.get("entities", {})
+                    state.tools_used.append("GraphQueryTool")
+                elif kind == "calc" and result.success and result.data:
+                    state.calculator_results = result.data
+                    state.tools_used.append("CalculatorTool")
+
+        # Rerank deduplicated chunks
+        unique_chunks = list(dict.fromkeys(all_chunks))
+        if unique_chunks:
             try:
                 state.vector_results = self.reranker.rerank(
                     state.query, unique_chunks, top_k=5
@@ -284,21 +315,6 @@ class AgentOrchestrator:
             except Exception:
                 state.vector_results = unique_chunks[:5]
             state.tools_used.append("DocumentSearchTool")
-
-        # Graph retrieval (conditional)
-        if state.needs_graph and self.graph_tool:
-            graph_result = self.graph_tool.run(state.query)
-            if graph_result.success:
-                state.graph_context = graph_result.data.get("context", "")
-                state.graph_entities = graph_result.data.get("entities", {})
-                state.tools_used.append("GraphQueryTool")
-
-        # Calculator (conditional)
-        if state.needs_calculator:
-            calc_result = self.calculator.run(state.query)
-            if calc_result.success and calc_result.data:
-                state.calculator_results = calc_result.data
-                state.tools_used.append("CalculatorTool")
 
         return state
 
@@ -339,20 +355,19 @@ class AgentOrchestrator:
 
     def _node_generate(self, state: AgentState) -> AgentState:
         """Call LLM with the fused context."""
-        if not state.final_context:
-            state.answer = "No accessible information found for your query."
-            state.confidence = 0.0
-            return state
-
         question = state.query
         if state.query_type == "summary":
             question = f"Provide a comprehensive summary. {question}"
 
         try:
-            state.answer = self.llm.generate_answer(question, state.final_context)
+            state.answer = self.llm.generate_answer(
+                question,
+                state.final_context,
+                role=state.user_role,
+            )
         except Exception as e:
             logger.error(f"[Orchestrator] LLM error: {e}")
-            state.answer = "An error occurred generating the response."
+            state.answer = "I encountered an issue generating the response. Please try again."
             state.error = str(e)
 
         return state

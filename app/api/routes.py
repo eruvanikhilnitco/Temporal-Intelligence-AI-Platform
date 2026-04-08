@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import logging
 import time
@@ -51,6 +52,64 @@ def ask_question(
     else:
         role = "user"
 
+    # ── Document exfiltration / data-leak guardrail (non-admin only) ──────────
+    if role != "admin":
+        q_lower = req.question.lower()
+        exfil_patterns = [
+            # Asking for raw document content / file names
+            r"give me (the |all |the full |)document",
+            r"show me (the |all |)document",
+            r"list (all |the |)(document|file) name",
+            r"what (are |is )(the |all )?(document|file) name",
+            r"all file",
+            r"full document",
+            r"entire document",
+            r"raw (document|file|text|content|data)",
+            r"dump (the |all |)(document|file|data|content)",
+            r"export (the |all |)(document|file|data)",
+            r"print (the |all |full |)(document|file|content)",
+            r"share (the |all |)(document|file|source)",
+            r"send me (the |all |)(document|file)",
+            r"leak",
+            r"reveal (the |all |)(document|file|source|content)",
+            r"background code",
+            r"source code",
+            r"backend code",
+            r"system prompt",
+            r"ignore (previous|above|all) instruction",
+        ]
+        is_exfil = any(re.search(p, q_lower) for p in exfil_patterns)
+        if is_exfil:
+            _log_security_event(
+                db=db,
+                user_id=current_user["user_id"],
+                email=current_user.get("email", ""),
+                event_type="document_exfiltration_attempt",
+                severity="high",
+                description=f"User attempted to extract document data or system internals: '{req.question[:200]}'",
+                query=req.question,
+            )
+            _update_user_risk(db, current_user["user_id"])
+            from app.error_logger import log_warning
+            log_warning(
+                "Security",
+                f"Document exfiltration attempt by {current_user.get('email', 'unknown')}",
+                extra={"query": req.question[:300], "user_id": current_user["user_id"]},
+            )
+            return AskResponse(
+                answer=(
+                    "I'm here to help you find specific information and insights from the documents, "
+                    "but I'm not able to share complete documents, file names, or raw source data. "
+                    "Feel free to ask me specific questions and I'll be happy to assist!"
+                ),
+                graph_used=False,
+                confidence=100.0,
+                query_type="blocked",
+                sources=[],
+                latency_ms=0,
+                chat_log_id="",
+            )
+
     # Full security analysis: threat detection + PII masking + attack scoring
     security_info: dict = {}
     try:
@@ -89,6 +148,29 @@ def ask_question(
     t_start = time.time()
     session_id = req.session_id or current_user.get("user_id", "anon")
 
+    # ── Admin shortcut: detect system-level intents and answer directly ──────
+    if role == "admin":
+        admin_answer = _try_admin_intent(req.question)
+        if admin_answer:
+            latency_ms = int((time.time() - t_start) * 1000)
+            chat_log_id = str(uuid.uuid4())
+            try:
+                log = ChatLog(
+                    id=chat_log_id, user_id=current_user["user_id"],
+                    session_id=session_id, question=req.question,
+                    answer=admin_answer[:2000], query_type="admin",
+                    graph_used=False, confidence=100.0, sources=[], latency_ms=latency_ms,
+                )
+                db.add(log)
+                _update_user_activity(db, current_user["user_id"])
+                db.commit()
+            except Exception:
+                db.rollback()
+            return AskResponse(
+                answer=admin_answer, graph_used=False, confidence=100.0,
+                query_type="admin", sources=[], latency_ms=latency_ms, chat_log_id=chat_log_id,
+            )
+
     # Use self-learning service
     try:
         from services.self_learning import get_self_learning
@@ -109,16 +191,16 @@ def ask_question(
     if hints:
         confidence = min(confidence + hints.get("confidence_modifier", 0) * 100, 99.0)
 
-    # Build sources — admin sees chunks, user sees none
+    # Build sources — admin sees full chunks, user sees none
     raw_sources = result.get("sources", [])
     if role == "admin":
         sources = [
             SourceItem(
                 name=s.get("name", "Document"),
                 relevance=float(s.get("relevance", 0.8)),
-                chunk=s.get("chunk", "")[:500],
+                chunk=s.get("chunk", "")[:2000],  # full chunk for admin (was 500)
             )
-            for s in raw_sources[:5]
+            for s in raw_sources[:8]  # show more sources for admin (was 5)
         ]
     else:
         # Users do not see raw document chunks
@@ -332,24 +414,45 @@ async def upload_document(
         with dest.open("wb") as f:
             shutil.copyfileobj(file.file, f)
     except Exception as e:
+        from app.error_logger import log_error
+        log_error("Upload", f"File save failed for '{file.filename}'", exc=e,
+                  user=current_user.get("email"), extra={"filename": file.filename})
         logger.error(f"File save failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to save file")
 
+    # Queue for background ingestion (returns immediately — no more 5-min waits)
     try:
-        entities = ingest_file(str(dest))
+        from services.ingest_queue import get_ingest_queue
+        q = get_ingest_queue()
+        job_id = q.submit(str(dest), original_filename=file.filename)
+        logger.info(f"[Upload] Queued '{file.filename}' as job {job_id}")
         return UploadResponse(
-            status="success",
+            status="queued",
             filename=file.filename,
-            message="Document ingested into vector store and knowledge graph.",
-            entities=entities,
+            message=f"File saved and queued for processing (job: {job_id[:8]}…). It will be searchable within seconds.",
+            entities=[],
         )
     except Exception as e:
-        logger.error(f"Ingestion failed: {e}")
-        return UploadResponse(
-            status="partial",
-            filename=file.filename,
-            message=f"File saved but ingestion encountered an error: {str(e)}",
-        )
+        # Fallback: synchronous ingestion
+        from app.error_logger import log_error
+        log_error("Upload", f"Queue submit failed for '{file.filename}', trying sync", exc=e,
+                  user=current_user.get("email"))
+        try:
+            entities = ingest_file(str(dest))
+            return UploadResponse(
+                status="success",
+                filename=file.filename,
+                message="Document ingested into vector store and knowledge graph.",
+                entities=entities,
+            )
+        except Exception as e2:
+            log_error("Upload", f"Ingestion failed for '{file.filename}'", exc=e2,
+                      user=current_user.get("email"), extra={"filename": file.filename})
+            return UploadResponse(
+                status="partial",
+                filename=file.filename,
+                message=f"File saved but ingestion failed: {str(e2)}",
+            )
 
 
 @router.post("/upload/batch")
@@ -358,22 +461,21 @@ async def upload_folder(
     current_user: dict = Depends(require_client),
 ):
     """
-    Batch upload endpoint — accepts multiple files at once (folder upload).
-    Each file is processed independently through the same RAG pipeline.
-    Supports nested folder uploads from the browser's webkitdirectory input.
-
-    Returns per-file results so the frontend can display individual statuses.
+    Batch upload endpoint — accepts up to 100+ files at once (folder upload).
+    Files are saved to disk then immediately queued for background ingestion.
+    Returns per-file job IDs instantly — poll /upload/status/{job_id} for progress.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
+
+    from services.ingest_queue import get_ingest_queue
+    q = get_ingest_queue()
 
     results = []
     for file in files:
         if not file.filename:
             continue
 
-        # Preserve relative path from folder (browsers send webkitRelativePath as filename)
-        # e.g., "folder/subfolder/doc.pdf" → stored as "subfolder__doc.pdf"
         raw_name = file.filename.replace("/", "__").replace("\\", "__")
         suffix = Path(raw_name).suffix.lower()
 
@@ -382,7 +484,7 @@ async def upload_folder(
                 "filename": file.filename,
                 "status": "skipped",
                 "message": f"Unsupported file type '{suffix}'",
-                "entities": None,
+                "job_id": None,
             })
             continue
 
@@ -395,39 +497,41 @@ async def upload_folder(
                 "filename": file.filename,
                 "status": "error",
                 "message": f"Failed to save: {str(e)}",
-                "entities": None,
+                "job_id": None,
             })
             continue
 
+        # Queue immediately — never block the HTTP handler on ingestion
         try:
-            entities = ingest_file(str(dest))
+            job_id = q.submit(str(dest), original_filename=file.filename)
             results.append({
                 "filename": file.filename,
                 "stored_as": raw_name,
-                "status": "success",
-                "message": "Ingested successfully",
-                "entities": entities,
+                "status": "queued",
+                "message": "Queued for background ingestion",
+                "job_id": job_id,
             })
         except Exception as e:
-            logger.error(f"[BatchUpload] Ingestion failed for {raw_name}: {e}")
+            logger.error(f"[BatchUpload] Queue failed for {raw_name}: {e}")
             results.append({
                 "filename": file.filename,
                 "stored_as": raw_name,
-                "status": "partial",
-                "message": f"Saved but ingestion error: {str(e)[:120]}",
-                "entities": None,
+                "status": "error",
+                "message": f"Queue submit failed: {str(e)[:120]}",
+                "job_id": None,
             })
 
-    success_count = sum(1 for r in results if r["status"] == "success")
+    queued_count = sum(1 for r in results if r["status"] == "queued")
     error_count = sum(1 for r in results if r["status"] == "error")
     skipped_count = sum(1 for r in results if r["status"] == "skipped")
 
     return {
-        "status": "complete",
+        "status": "queued",
         "total": len(results),
-        "success": success_count,
+        "queued": queued_count,
         "errors": error_count,
         "skipped": skipped_count,
+        "queue_depth": q.queue_depth(),
         "files": results,
     }
 
@@ -458,6 +562,13 @@ async def upload_async(
     q = get_ingest_queue()
     job_id = q.submit(str(dest), original_filename=file.filename)
     return {"status": "queued", "job_id": job_id, "filename": file.filename}
+
+
+@router.get("/upload/status/all")
+def upload_status_all(current_user: dict = Depends(require_client)):
+    """Return status of all recent ingest jobs (newest first, limit 50)."""
+    from services.ingest_queue import get_ingest_queue
+    return get_ingest_queue().all_statuses()[:50]
 
 
 @router.get("/upload/status/{job_id}")
@@ -510,6 +621,69 @@ def _update_user_risk(db: Session, user_id: str):
     except Exception as e:
         logger.warning(f"Risk update failed: {e}")
         db.rollback()
+
+
+_FILE_LIST_RE = re.compile(
+    r"\b(list|show|display|what|which|all|get|give|tell).{0,30}(file|document|upload|doc)\b"
+    r"|\b(uploaded|available)\s+(file|document|doc)s?\b"
+    r"|\bfile\s*(list|name)s?\b",
+    re.IGNORECASE,
+)
+_LOG_RE = re.compile(
+    r"\b(error|system|access|recent|latest|last|show|get)\s+(log|error|warning)s?\b"
+    r"|\blog\s+(entry|entries|file)\b"
+    r"|\b(what|show|get|access)\s+.{0,20}log\b",
+    re.IGNORECASE,
+)
+
+
+def _try_admin_intent(question: str):
+    """
+    Detect admin-only system intents and answer them directly without going through RAG.
+    Returns a formatted string answer or None (fall through to RAG).
+    """
+    q = question.strip()
+
+    # ── Intent: list uploaded files ──────────────────────────────────────────
+    if _FILE_LIST_RE.search(q):
+        try:
+            from services.document_reader import DocumentReader
+            import os
+            reader = DocumentReader()
+            files = reader.list_files()
+            if not files:
+                return "No documents have been uploaded yet. Use the Upload tab to add files."
+            lines = [f"**{i+1}. {f}**" for i, f in enumerate(files)]
+            return (
+                f"There are **{len(files)} uploaded document(s)** in the system:\n\n"
+                + "\n".join(lines)
+            )
+        except Exception as e:
+            logger.warning(f"[AdminIntent] File list failed: {e}")
+
+    # ── Intent: access system / error logs ───────────────────────────────────
+    if _LOG_RE.search(q):
+        try:
+            from app.error_logger import read_recent_errors
+            entries = read_recent_errors(limit=10)
+            if not entries:
+                return "No error log entries found. The system is running cleanly."
+            lines = []
+            for e in entries:
+                ts = e.get("timestamp", "")[:19]
+                lvl = e.get("level", "")
+                src = e.get("source", "")
+                msg = e.get("message", "")[:200]
+                lines.append(f"[{ts}] **{lvl}** ({src}): {msg}")
+            return (
+                f"**Last {len(entries)} system log entries** (newest first):\n\n"
+                + "\n".join(lines)
+                + "\n\nFor full logs use the Admin Panel → System Logs tab."
+            )
+        except Exception as e:
+            logger.warning(f"[AdminIntent] Log read failed: {e}")
+
+    return None  # fall through to RAG
 
 
 def _update_user_activity(db: Session, user_id: str):

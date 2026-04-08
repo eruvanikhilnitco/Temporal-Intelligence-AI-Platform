@@ -11,11 +11,56 @@ const FEATURES = [
   { icon: BarChart3, title: "Enterprise Analytics", desc: "Track accuracy, latency, cache hit rates, and per-user engagement with detailed dashboards.", color: "text-orange-400", bg: "bg-orange-400/10 border-orange-400/20" },
 ];
 
+// ── Static demo responses ─────────────────────────────────────────────────────
+const DEMO_RESPONSES: Record<string, { text: string; conf: number }> = {
+  "what is contract number 511047": {
+    text: "Contract #511047 is a 3-year software services agreement between Meridian Corp and DataBridge Ltd, effective January 15 2024. It covers SaaS platform licensing, SLA guarantees (99.9% uptime), and a total value of $2.4M. The contract expires January 14 2027 and includes a 90-day termination clause.",
+    conf: 94,
+  },
+  "summarize all high-risk agreements": {
+    text: "Found 3 high-risk agreements in the knowledge base:\n\n1. Contract #511047 — Meridian Corp / DataBridge Ltd ($2.4M, expires Jan 2027) — flagged for single-vendor dependency.\n2. Contract #883201 — GlobalOps Inc / NexaTech ($870K) — pending renewal, 30-day lapse window.\n3. Contract #990034 — Apex Holdings ($5.1M) — force-majeure clause absent, legal review recommended.\n\nAll three require admin attention before Q3.",
+    conf: 91,
+  },
+};
+
+function getDemoAnswer(question: string): { text: string; conf: number } {
+  const q = question.toLowerCase().trim().replace(/[?!.]+$/, "");
+
+  // Greeting
+  if (/^(hi|hello|hey|howdy|sup|yo|greetings)/.test(q)) {
+    return { text: "Hello! 👋 I'm CortexFlow AI. I can answer questions about contracts, agreements, and your uploaded documents. Try one of the sample questions below, or ask me anything!", conf: 100 };
+  }
+  if (/^(bye|goodbye|see you|cya|thanks|thank you)/.test(q)) {
+    return { text: "Goodbye! Feel free to come back any time. Sign up for full access to query your own documents.", conf: 100 };
+  }
+
+  // Exact & partial match against known demos
+  for (const [key, val] of Object.entries(DEMO_RESPONSES)) {
+    if (q.includes(key) || key.includes(q.slice(0, 20))) return val;
+  }
+
+  // What can you do?
+  if (/what.*(can|do|able|capability|feature)/.test(q) || /how.*work/.test(q)) {
+    return { text: "CortexFlow can: ① Answer questions from uploaded documents using hybrid RAG, ② Extract entities and relationships into a knowledge graph, ③ Summarize agreements and flag risks, ④ Support multi-hop reasoning across connected documents. Sign up to try it on your own files!", conf: 98 };
+  }
+
+  // Contract / document generic
+  if (/contract|agreement|document|file/.test(q)) {
+    return { text: "In the demo knowledge base I have access to several sample contracts. For example, Contract #511047 covers a 3-year SaaS agreement worth $2.4M. Sign in to upload and query your own documents with full RBAC and audit logging.", conf: 82 };
+  }
+
+  // Fallback
+  return {
+    text: "Great question! In full mode, CortexFlow would search your uploaded documents, build a knowledge graph, and return a precise answer with source citations. Sign up to unlock full access — it only takes 30 seconds.",
+    conf: 78,
+  };
+}
+
 // ── Public Demo Chat ──────────────────────────────────────────────────────────
 function PublicDemoChat() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "ai"; text: string; conf?: number }[]>([
-    { role: "ai", text: "Hi! I'm CortexFlow AI in public demo mode. Ask me anything about the platform or try a sample question below.", conf: 100 },
+    { role: "ai", text: "Hi! I'm CortexFlow AI in demo mode. Ask me anything about contracts, agreements, or the platform — or try a sample question below.", conf: 100 },
   ]);
   const [loading, setLoading] = useState(false);
 
@@ -24,25 +69,18 @@ function PublicDemoChat() {
     "Summarize all high-risk agreements",
   ];
 
-  async function send(q?: string) {
+  function send(q?: string) {
     const question = (q ?? input).trim();
     if (!question || loading) return;
     setMessages(prev => [...prev, { role: "user", text: question }]);
     setInput("");
     setLoading(true);
-    try {
-      const res = await fetch("/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, role: "public" }),
-      });
-      const data = await res.json();
-      setMessages(prev => [...prev, { role: "ai", text: data.answer || "No response.", conf: Math.round(data.confidence || 75) }]);
-    } catch {
-      setMessages(prev => [...prev, { role: "ai", text: "Demo is limited — please sign in for full access." }]);
-    } finally {
+    // Simulate a short thinking delay, then return static answer
+    setTimeout(() => {
+      const answer = getDemoAnswer(question);
+      setMessages(prev => [...prev, { role: "ai", text: answer.text, conf: answer.conf }]);
       setLoading(false);
-    }
+    }, 600 + Math.random() * 400);
   }
 
   return (
@@ -173,11 +211,6 @@ export default function Landing({ navigate }: { navigate: NavigateFn }) {
               className="flex items-center justify-center gap-2 px-8 py-3.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 font-semibold rounded-xl transition">
               Try Demo
             </button>
-          </div>
-          <div className="flex items-center justify-center gap-6 text-sm text-gray-500 flex-wrap">
-            {["No credit card required", "SOC2-ready architecture", "GDPR-compliant"].map(t => (
-              <span key={t} className="flex items-center gap-1.5"><Check size={13} className="text-emerald-400" />{t}</span>
-            ))}
           </div>
         </div>
       </section>
