@@ -138,6 +138,7 @@ class AgentState:
     query_type: str = "fact"
     needs_graph: bool = False
     needs_calculator: bool = False
+    conversation_history: List[dict] = field(default_factory=list)
     vector_results: List[str] = field(default_factory=list)
     graph_context: str = ""
     graph_entities: Dict = field(default_factory=dict)
@@ -186,8 +187,9 @@ class AgentOrchestrator:
         classifier=None,
     ):
         self.rag = phase1_rag
+        # B2: Two-stage retrieval — fetch 50 candidates, reranker narrows to top-5
         self.doc_tool = DocumentSearchTool(
-            lambda q, role: phase1_rag.query(q, role)
+            lambda q, role: phase1_rag.query(q, role, top_k=50)
         )
         self.graph_tool = GraphQueryTool(graph_service) if graph_service else None
         self.summarizer = SummarizationTool()
@@ -200,11 +202,13 @@ class AgentOrchestrator:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self, query: str, user_role: str = "user",
-            session_id: str = "") -> AgentState:
+            session_id: str = "",
+            conversation_history: Optional[list] = None) -> AgentState:
         """Execute the full agent pipeline and return the final state."""
         t_start = time.time()
 
-        state = AgentState(query=query, user_role=user_role, session_id=session_id)
+        state = AgentState(query=query, user_role=user_role, session_id=session_id,
+                           conversation_history=conversation_history or [])
 
         # Check cache first
         cache_key = f"{user_role}:{query}"
@@ -305,8 +309,8 @@ class AgentOrchestrator:
                     state.calculator_results = result.data
                     state.tools_used.append("CalculatorTool")
 
-        # Rerank deduplicated chunks
-        unique_chunks = list(dict.fromkeys(all_chunks))
+        # Rerank deduplicated chunks (B2: candidates capped at 50 before reranking)
+        unique_chunks = list(dict.fromkeys(all_chunks))[:50]
         if unique_chunks:
             try:
                 state.vector_results = self.reranker.rerank(
@@ -364,6 +368,7 @@ class AgentOrchestrator:
                 question,
                 state.final_context,
                 role=state.user_role,
+                conversation_history=state.conversation_history or None,
             )
         except Exception as e:
             logger.error(f"[Orchestrator] LLM error: {e}")

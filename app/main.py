@@ -42,6 +42,7 @@ def startup():
     _seed_default_rules()
     _warmup_rag_background()
     _start_ingest_queue()
+    _start_health_monitor()
     logging.getLogger(__name__).info("[Startup] CortexFlow v4.1 started — error log: logs/error_log.jsonl")
 
 
@@ -53,6 +54,16 @@ def _start_ingest_queue():
         logging.getLogger(__name__).info("[Startup] Ingest queue worker started")
     except Exception as e:
         logging.getLogger(__name__).warning(f"[Startup] Ingest queue failed to start: {e}")
+
+
+def _start_health_monitor():
+    """Start background service health checks (Neo4j, Qdrant)."""
+    try:
+        from services.health_monitor import start_health_monitor
+        start_health_monitor(interval=30)
+        logging.getLogger(__name__).info("[Startup] Health monitor started")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[Startup] Health monitor failed to start: {e}")
 
 
 def _warmup_rag_background():

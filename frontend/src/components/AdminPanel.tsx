@@ -248,6 +248,7 @@ export default function AdminPanel({ user }: { user?: any }) {
   // System health
   const [health, setHealth] = useState<Record<string, SystemStatus>>({});
   const [healthLoading, setHealthLoading] = useState(false);
+  const [serviceHealth, setServiceHealth] = useState<Record<string, any>>({});
 
   // Analytics
   const [analytics, setAnalytics] = useState<any>(null);
@@ -320,6 +321,13 @@ export default function AdminPanel({ user }: { user?: any }) {
     finally { setHealthLoading(false); }
   }, []);
 
+  const fetchServiceHealth = useCallback(async () => {
+    try {
+      const res = await axios.get("/admin/health/services", { headers: authHeaders() });
+      setServiceHealth(res.data);
+    } catch { /* non-critical */ }
+  }, []);
+
   const fetchAnalytics = useCallback(async () => {
     setAnalyticsLoading(true);
     try {
@@ -365,7 +373,7 @@ export default function AdminPanel({ user }: { user?: any }) {
   }, []);
 
   useEffect(() => {
-    if (tab === "overview") { fetchHealth(); fetchSecEvents(); fetchAnalytics(); fetchCacheStats(); }
+    if (tab === "overview") { fetchHealth(); fetchServiceHealth(); fetchSecEvents(); fetchAnalytics(); fetchCacheStats(); }
     if (tab === "users") fetchUsers();
     if (tab === "rules") fetchRules();
     if (tab === "security") { fetchSecEvents(); fetchErrorLog(); }
@@ -454,6 +462,24 @@ export default function AdminPanel({ user }: { user?: any }) {
                 value="Secured" status="online" color="text-emerald-400"
                 extra={cacheStats ? `Cache: ${cacheStats.hit_rate_pct ?? 0}% hit` : undefined} />
             </div>
+
+            {/* Service health warnings (Neo4j / Qdrant down) */}
+            {Object.entries(serviceHealth).some(([, v]) => v.status === "down") && (
+              <div className="space-y-1">
+                {Object.entries(serviceHealth)
+                  .filter(([, v]) => v.status === "down")
+                  .map(([name, v]) => (
+                    <div key={name} className="flex items-start gap-2 rounded-md border border-yellow-600/50 bg-yellow-900/20 px-4 py-2 text-sm text-yellow-300">
+                      <span className="mt-0.5 shrink-0">⚠️</span>
+                      <span>
+                        <strong className="capitalize">{name}</strong> is unreachable.
+                        {v.error ? ` Error: ${v.error}` : ""}
+                        {v.last_ok ? ` Last healthy: ${new Date(v.last_ok).toLocaleTimeString()}` : ""}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
 
             {/* Quick stats from analytics */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

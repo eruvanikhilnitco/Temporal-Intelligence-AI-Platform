@@ -18,7 +18,7 @@ from sqlalchemy import func
 from app.db import get_db
 from app.dependencies import require_admin
 from app.models import (
-    User, ChatLog, SecurityEvent, Rule, UserActivity, QueryFeedback
+    User, ChatLog, SecurityEvent, Rule, UserActivity, QueryFeedback, ApiKey
 )
 from app.api.schemas import (
     RuleCreate, RuleUpdate, RuleResponse,
@@ -1143,3 +1143,111 @@ def clear_error_log(current_user: dict = Depends(require_admin)):
         return {"status": "cleared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not clear log: {e}")
+
+
+# ── API Key Management ────────────────────────────────────────────────────────
+
+class ApiKeyCreateRequest(BaseModel):
+    name: str
+    permissions: str = "read"          # "read" or "read_write"
+    expires_days: Optional[int] = None  # None = never expires
+    notes: Optional[str] = None
+
+
+@router.post("/api-keys")
+def create_api_key(
+    data: ApiKeyCreateRequest,
+    current_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a new external API key.
+
+    Permissions:
+      read       → maps to 'user' role (can query /ask, /chat/history)
+      read_write → maps to 'admin' role (can query + upload + full access)
+
+    The raw key is returned ONCE — it cannot be retrieved again.
+    Share it with the integration team and store it securely.
+
+    Integration example:
+      curl -X POST https://your-domain/ask \\
+           -H "X-API-Key: cf_live_XXXX..." \\
+           -H "Content-Type: application/json" \\
+           -d '{"question": "What is contract 511047?"}'
+    """
+    from services.api_key_service import create_api_key as svc_create
+    if data.permissions not in ("read", "read_write"):
+        raise HTTPException(status_code=400, detail="permissions must be 'read' or 'read_write'")
+    return svc_create(
+        db=db,
+        name=data.name,
+        created_by=current_user["user_id"],
+        permissions=data.permissions,
+        expires_days=data.expires_days,
+        notes=data.notes,
+    )
+
+
+@router.get("/api-keys")
+def list_api_keys(
+    current_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """List all API keys (active and revoked). Raw key is never returned."""
+    from services.api_key_service import list_api_keys as svc_list
+    return {"keys": svc_list(db), "total": db.query(ApiKey).count()}
+
+
+@router.get("/api-keys/{key_id}")
+def get_api_key(
+    key_id: str,
+    current_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get detail + last 50 usage entries for a specific API key."""
+    from services.api_key_service import get_api_key_detail
+    detail = get_api_key_detail(db, key_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return detail
+
+
+@router.delete("/api-keys/{key_id}")
+def revoke_api_key(
+    key_id: str,
+    current_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Revoke an API key immediately. All future requests with this key will fail."""
+    from services.api_key_service import revoke_api_key as svc_revoke
+    ok = svc_revoke(db, key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"status": "revoked", "key_id": key_id}
+
+
+@router.patch("/api-keys/{key_id}/activate")
+def reactivate_api_key(
+    key_id: str,
+    current_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Re-activate a previously revoked API key."""
+    key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="API key not found")
+    key.is_active = True
+    db.commit()
+    return {"status": "activated", "key_id": key_id}
+
+
+
+@router.get("/health/services")
+def get_service_health(current_user: dict = Depends(require_admin)):
+    """
+    Returns current health status of Neo4j, Qdrant, and other services.
+    Checked by background monitor every 30 seconds.
+    """
+    from services.health_monitor import get_health_status
+    return get_health_status()

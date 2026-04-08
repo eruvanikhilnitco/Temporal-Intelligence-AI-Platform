@@ -21,6 +21,10 @@ interface Message {
   streaming?: boolean;
   chatLogId?: string;
   feedback?: "positive" | "negative" | null;
+  groundingScore?: number | null;
+  groundingWarning?: string | null;
+  providerUsed?: string;
+  fallbackUsed?: boolean;
 }
 
 // ── Simple inline markdown renderer ─────────────────────────────────────────
@@ -185,6 +189,14 @@ function MessageBubble({
 
               {/* Sources */}
               {msg.sources && <SourcesPanel sources={msg.sources} />}
+
+              {/* Grounding warning */}
+              {msg.groundingWarning && (
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-yellow-600/50 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-300">
+                  <span className="mt-0.5 shrink-0">⚠️</span>
+                  <span>{msg.groundingWarning}</span>
+                </div>
+              )}
 
               {/* Action row */}
               <div className="flex items-center gap-3 mt-3 pt-2 border-t border-gray-700">
@@ -386,6 +398,12 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
         signal: controller.signal,
       });
 
+      if (res.status === 429) {
+        const errData = await res.json().catch(() => ({}));
+        const retryAfter = res.headers.get("Retry-After");
+        const detail = errData.detail || `Rate limit exceeded. Please wait${retryAfter ? ` ${retryAfter}s` : " a while"} before retrying.`;
+        throw new Error(detail);
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
@@ -400,6 +418,10 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
           sources: data.sources || [],
           chatLogId: data.chat_log_id,
           feedback: null,
+          groundingScore: data.grounding_score ?? null,
+          groundingWarning: data.grounding_warning ?? null,
+          providerUsed: data.provider_used ?? undefined,
+          fallbackUsed: data.fallback_used ?? false,
         } : m)
       );
 

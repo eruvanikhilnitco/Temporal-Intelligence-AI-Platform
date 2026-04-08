@@ -67,7 +67,8 @@ def ask_rag(question: str, role: str) -> str:
     return result.get("answer", "")
 
 
-def ask_rag_full(question: str, role: str, session_id: str = "") -> dict:
+def ask_rag_full(question: str, role: str, session_id: str = "",
+                 conversation_history: Optional[list] = None) -> dict:
     """
     Full response with sources, confidence, query type, graph_used.
     Uses Agent Orchestrator when available, falls back to Phase1RAG.
@@ -77,7 +78,8 @@ def ask_rag_full(question: str, role: str, session_id: str = "") -> dict:
 
     if orch is not None:
         try:
-            state = orch.run(question, user_role=role, session_id=session_id)
+            state = orch.run(question, user_role=role, session_id=session_id,
+                             conversation_history=conversation_history)
             return {
                 "answer": state.answer,
                 "graph_used": bool(state.graph_context),

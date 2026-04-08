@@ -11,11 +11,13 @@ from fastapi.responses import StreamingResponse
 from typing import List as TypingList
 import json
 
+import hashlib
+
 from app.api.schemas import AskRequest, AskResponse, UploadResponse, HealthResponse, SourceItem, FeedbackRequest
 from app.services.rag_service import ask_rag, ask_rag_full, ingest_file
-from app.dependencies import get_current_user, require_client, OptionalUser
+from app.dependencies import get_current_user, require_client, OptionalUser, check_rate_limit
 from app.db import get_db
-from app.models import ChatLog, SecurityEvent, UserActivity, QueryFeedback, User
+from app.models import ChatLog, SecurityEvent, UserActivity, QueryFeedback, User, Document
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -38,7 +40,7 @@ def health():
 def ask_question(
     req: AskRequest,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(check_rate_limit),
     db: Session = Depends(get_db),
 ):
     if not req.question.strip():
@@ -181,8 +183,25 @@ def ask_question(
         enriched_q = req.question
         hints = {}
 
+    # D3: Fetch last 3 turns of conversation history for context-aware replies
+    conversation_history = []
+    try:
+        recent_logs = (
+            db.query(ChatLog)
+            .filter(ChatLog.session_id == session_id)
+            .order_by(ChatLog.created_at.desc())
+            .limit(3)
+            .all()
+        )
+        for log in reversed(recent_logs):
+            conversation_history.append({"role": "user", "text": log.question})
+            conversation_history.append({"role": "assistant", "text": log.answer})
+    except Exception as e:
+        logger.warning("[Ask] Could not fetch conversation history: %s", e)
+
     # Use agent orchestrator
-    result = ask_rag_full(enriched_q, role, session_id=session_id)
+    result = ask_rag_full(enriched_q, role, session_id=session_id,
+                          conversation_history=conversation_history or None)
 
     latency_ms = int((time.time() - t_start) * 1000)
 
@@ -250,6 +269,19 @@ def ask_question(
     except Exception:
         pass
 
+    # Hallucination guard — score synchronously (reranker already loaded)
+    grounding_score: Optional[float] = None
+    grounding_warning: Optional[str] = None
+    try:
+        from services.hallucination_guard import compute_grounding_score
+        raw_chunks = [s.get("chunk", "") for s in result.get("sources", []) if s.get("chunk")]
+        if raw_chunks and answer:
+            guard = compute_grounding_score(answer, raw_chunks)
+            grounding_score = guard["grounding_score"]
+            grounding_warning = guard["warning"]
+    except Exception:
+        pass
+
     # Explainability — admin gets full reasoning trace
     explanation: Optional[dict] = None
     if role == "admin":
@@ -259,6 +291,9 @@ def ask_question(
             "graph_confidence": result.get("graph_confidence_score", 0.0),
             "reasoning_trace": result.get("reasoning_trace", []),
             "tools_used": result.get("tools_used", []),
+            "provider_used": result.get("provider_used", "cohere"),
+            "fallback_used": result.get("fallback_used", False),
+            "grounding_score": grounding_score,
             "security": {
                 "risk_level": security_info.get("risk_level", "LOW"),
                 "pii_found": security_info.get("pii_found", []),
@@ -275,6 +310,10 @@ def ask_question(
         latency_ms=latency_ms,
         chat_log_id=chat_log_id,
         explanation=explanation,
+        grounding_score=grounding_score,
+        grounding_warning=grounding_warning,
+        provider_used=result.get("provider_used", "cohere"),
+        fallback_used=result.get("fallback_used", False),
     )
 
 
@@ -401,6 +440,7 @@ def get_chat_history(
 async def upload_document(
     file: UploadFile = File(...),
     current_user: dict = Depends(require_client),
+    db: Session = Depends(get_db),
 ):
     suffix = Path(file.filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
@@ -409,10 +449,23 @@ async def upload_document(
             detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
+    file_bytes = await file.read()
+    new_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # ── A5: Document Versioning ───────────────────────────────────────────────
+    existing: Document | None = db.query(Document).filter_by(filename=file.filename).first()
+    if existing and existing.content_hash == new_hash:
+        logger.info("[Upload] '%s' unchanged (hash match) — skip re-embed", file.filename)
+        return UploadResponse(
+            status="unchanged",
+            filename=file.filename,
+            message="Document is identical to the existing version — no re-processing needed.",
+        )
+
+    # Save file to disk
     dest = UPLOAD_DIR / file.filename
     try:
-        with dest.open("wb") as f:
-            shutil.copyfileobj(file.file, f)
+        dest.write_bytes(file_bytes)
     except Exception as e:
         from app.error_logger import log_error
         log_error("Upload", f"File save failed for '{file.filename}'", exc=e,
@@ -420,16 +473,55 @@ async def upload_document(
         logger.error(f"File save failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to save file")
 
+    # Delete stale Qdrant chunks for updated documents
+    if existing:
+        try:
+            from app.services.rag_service import _get_rag
+            rag = _get_rag()
+            if rag:
+                from qdrant_client.models import Filter, FieldCondition, MatchValue
+                rag.client.delete(
+                    collection_name=rag.collection_name,
+                    points_selector=Filter(
+                        must=[FieldCondition(key="file_name", match=MatchValue(value=file.filename))]
+                    ),
+                )
+                logger.info("[Upload] Deleted stale Qdrant chunks for '%s'", file.filename)
+        except Exception as e:
+            logger.warning("[Upload] Could not delete stale chunks for '%s': %s", file.filename, e)
+
+    # Upsert Document registry record
+    try:
+        if existing:
+            existing.content_hash = new_hash
+            existing.version = (existing.version or 1) + 1
+            existing.file_size_bytes = len(file_bytes)
+            existing.last_updated = datetime.utcnow()
+            existing.ingested_by = current_user.get("user_id", "unknown")
+        else:
+            db.add(Document(
+                filename=file.filename,
+                content_hash=new_hash,
+                version=1,
+                file_size_bytes=len(file_bytes),
+                ingested_by=current_user.get("user_id", "unknown"),
+            ))
+        db.commit()
+    except Exception as e:
+        logger.warning("[Upload] Document registry update failed: %s", e)
+        db.rollback()
+
     # Queue for background ingestion (returns immediately — no more 5-min waits)
     try:
         from services.ingest_queue import get_ingest_queue
         q = get_ingest_queue()
         job_id = q.submit(str(dest), original_filename=file.filename)
         logger.info(f"[Upload] Queued '{file.filename}' as job {job_id}")
+        version_label = f" (v{existing.version})" if existing else ""
         return UploadResponse(
             status="queued",
             filename=file.filename,
-            message=f"File saved and queued for processing (job: {job_id[:8]}…). It will be searchable within seconds.",
+            message=f"File saved{version_label} and queued for processing (job: {job_id[:8]}…). It will be searchable within seconds.",
             entities=[],
         )
     except Exception as e:

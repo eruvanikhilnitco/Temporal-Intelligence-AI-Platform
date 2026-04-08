@@ -5,6 +5,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [4.6.0] — 2026-04-08
+
+### Added
+
+#### A3 — Hallucination Guard: Frontend Warning Banner
+- **`frontend/src/components/ChatInterface.tsx`** — Yellow warning banner rendered below SourcesPanel when `msg.groundingWarning` is non-null. Uses amber border + dark amber background, matches existing design system.
+
+#### A5 — Document Versioning
+- **`app/api/routes.py`** — `/upload` endpoint now reads file bytes and computes SHA-256 hash before saving.
+  - If filename already exists in `documents` table with identical hash → returns `status: "unchanged"` immediately (no re-embed, no re-queue).
+  - If new version: deletes stale Qdrant chunks (filter `file_name == filename`) before queuing, bumps `version`, updates `last_updated`.
+  - Creates or updates `Document` registry record on every new upload.
+- Added `import hashlib` and `Document` model import to `routes.py`.
+- Added `db: Session = Depends(get_db)` parameter to `/upload` endpoint.
+
+#### F2 — Rate Limiting (60/hr users, 300/hr admin)
+- **`app/dependencies.py`** — Added `_RateLimiter` class with sliding-window per-user bucketing (`threading.Lock` + `deque`). Limits: admin → 300/hr, user/client → 60/hr.
+- Added `check_rate_limit` dependency — raises HTTP 429 with `Retry-After` header on breach.
+- **`app/api/routes.py`** — `/ask` endpoint now uses `check_rate_limit` dependency instead of bare `get_current_user`.
+- **`frontend/src/components/ChatInterface.tsx`** — Handles HTTP 429 response: reads `Retry-After` header and shows the rate limit error message inline in the chat.
+
+#### D3 — Conversation Memory
+- **`app/api/routes.py`** — Before calling `ask_rag_full`, fetches last 3 `ChatLog` entries for the current `session_id` from DB, formats as `[{role, text}]` pairs, passes as `conversation_history` to LLM.
+- **`app/services/rag_service.py`** — `ask_rag_full()` accepts new `conversation_history: Optional[list]` param and forwards to orchestrator.
+- **`services/agent_orchestrator.py`** — `AgentState` has new `conversation_history: List[dict]` field. `run()` accepts `conversation_history` param. `_node_generate()` passes it to `llm.generate_answer()`. LLM already formats last 3 turns as "Previous conversation:" prefix.
+
+#### C1 — Neo4j / Qdrant Health Monitor
+- **`services/health_monitor.py`** (NEW) — Background thread checks Neo4j (2s timeout) and Qdrant (3s timeout) every 30s. Results stored in `_STATUS` dict with `status/last_checked/last_ok/error` fields. Exposes `get_health_status()` and `start_health_monitor()`.
+- **`app/main.py`** — `startup()` now calls `_start_health_monitor()`, which starts the background checker.
+- **`app/api/admin_routes.py`** — `GET /admin/health/services` returns snapshot from health monitor (admin only).
+- **`frontend/src/components/AdminPanel.tsx`** — Added `serviceHealth` state and `fetchServiceHealth()` calling `/admin/health/services`. Overview tab shows a yellow warning banner for each service that is `"down"`, with last-healthy timestamp.
+
+#### B2 — Two-Stage Retrieval (top-50 → rerank → top-5)
+- **`services/agent_orchestrator.py`** — `DocumentSearchTool` now calls `phase1_rag.query(q, role, top_k=50)` (was 10). After collecting all sub-query results, deduplicates and caps at 50 before passing to CrossEncoder reranker which narrows to top-5.
+
+### Changed
+- **`app/api/routes.py`** — imports `check_rate_limit` from `app.dependencies`; imports `Document` model.
+
+---
+
 ## [4.5.1] — 2026-04-08
 
 ### Fixed — Admin RBAC & Chat Capabilities
