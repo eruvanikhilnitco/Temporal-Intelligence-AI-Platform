@@ -9,8 +9,9 @@ import axios from "axios";
 interface UploadedFile {
   name: string;
   size: number;
-  status: "uploading" | "success" | "queued" | "error";
+  status: "uploading" | "success" | "queued" | "done" | "error" | "unchanged";
   message?: string;
+  jobId?: string;
   entities?: {
     contracts: string[];
     dates: string[];
@@ -73,8 +74,17 @@ function KnowledgeGraphPipeline({ entities }: { entities: UploadedFile["entities
 
 function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void }) {
   const isQueued = file.status === "queued";
+  const isDone = file.status === "done" || file.status === "success";
+  const isUnchanged = file.status === "unchanged";
+
+  const borderColor = isUnchanged
+    ? "border-yellow-600/40"
+    : file.status === "error" ? "border-red-600/40"
+    : isDone ? "border-emerald-600/30"
+    : "border-gray-700";
+
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
+    <div className={`bg-gray-800 border rounded-xl p-4 ${borderColor}`}>
       <div className="flex items-start gap-3">
         <div className="w-9 h-9 bg-gray-700 rounded-lg flex items-center justify-center shrink-0">
           <FileText size={16} className="text-gray-400" />
@@ -84,12 +94,15 @@ function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void
             <p className="text-sm text-white font-medium truncate">{file.name}</p>
             <div className="flex items-center gap-2 shrink-0">
               {file.status === "uploading" && <Loader2 size={14} className="text-brand-400 animate-spin" />}
-              {(file.status === "success" || isQueued) && <CheckCircle size={14} className="text-emerald-400" />}
+              {isQueued && <RefreshCw size={14} className="text-yellow-400 animate-spin" />}
+              {isDone && <CheckCircle size={14} className="text-emerald-400" />}
+              {isUnchanged && <CheckCircle size={14} className="text-yellow-400" />}
               {file.status === "error" && <AlertCircle size={14} className="text-red-400" />}
               <button onClick={onRemove} className="text-gray-500 hover:text-gray-300 transition"><X size={14} /></button>
             </div>
           </div>
           <p className="text-xs text-gray-500">{formatBytes(file.size)}</p>
+
           {file.status === "uploading" && (
             <div className="mt-2">
               <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
@@ -98,21 +111,32 @@ function FileCard({ file, onRemove }: { file: UploadedFile; onRemove: () => void
               <p className="text-xs text-gray-400 mt-1">Uploading…</p>
             </div>
           )}
+
           {isQueued && (
             <div className="mt-2">
               <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
-                <div className="h-1 bg-emerald-500 rounded-full w-full" />
+                <div className="h-1 bg-yellow-500 rounded-full w-full animate-pulse" />
               </div>
-              <p className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
+              <p className="text-xs text-yellow-400 mt-1 flex items-center gap-1">
                 <RefreshCw size={10} className="animate-spin" />
-                Queued — background ingestion running (embedding + graph)…
+                Processing — embedding and building knowledge graph…
               </p>
             </div>
           )}
-          {file.message && !["uploading", "queued"].includes(file.status) && (
-            <p className={`text-xs mt-1 ${file.status === "success" ? "text-emerald-400" : "text-red-400"}`}>{file.message}</p>
+
+          {isDone && (
+            <p className="text-xs text-emerald-400 mt-1">✓ Ready — you can now search this document</p>
           )}
-          {(file.status === "success" || isQueued) && <KnowledgeGraphPipeline entities={file.entities} />}
+
+          {isUnchanged && (
+            <p className="text-xs text-yellow-400 mt-1">⟳ No changes detected — skipped re-processing</p>
+          )}
+
+          {file.status === "error" && file.message && (
+            <p className="text-xs text-red-400 mt-1">{file.message}</p>
+          )}
+
+          {(isDone || isQueued) && <KnowledgeGraphPipeline entities={file.entities} />}
         </div>
       </div>
     </div>
@@ -539,6 +563,30 @@ export default function DocumentUpload() {
   const [dragging, setDragging] = useState(false);
   const [activeTab, setActiveTab] = useState<"files" | "folder" | "sharepoint" | "etl">("files");
 
+  const pollJob = useCallback((name: string, jobId: string) => {
+    const token = localStorage.getItem("accessToken");
+    const interval = setInterval(async () => {
+      try {
+        const res = await axios.get(`/upload/status/${jobId}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const s = res.data.status;
+        if (s === "done" || s === "error") {
+          clearInterval(interval);
+          setFiles(prev => prev.map(f =>
+            f.name === name ? {
+              ...f,
+              status: s === "done" ? "done" : "error",
+              message: s === "done" ? "✓ Ingested and ready to search" : (res.data.error || "Ingestion failed"),
+            } : f
+          ));
+        }
+      } catch { clearInterval(interval); }
+    }, 3000);
+    // Stop polling after 3 minutes max
+    setTimeout(() => clearInterval(interval), 180_000);
+  }, []);
+
   const processFile = useCallback(async (file: File) => {
     const entry: UploadedFile = { name: file.name, size: file.size, status: "uploading" };
     setFiles(prev => [...prev, entry]);
@@ -553,23 +601,34 @@ export default function DocumentUpload() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
-      const newStatus = (res.data.status === "success" || res.data.status === "queued")
-        ? res.data.status as "success" | "queued"
+      const apiStatus = res.data.status;
+      const jobId = res.data.message?.match(/job: ([a-f0-9-]+)/)?.[1];
+      const newStatus: UploadedFile["status"] =
+        apiStatus === "queued" ? "queued"
+        : apiStatus === "unchanged" ? "unchanged"
+        : apiStatus === "success" ? "done"
         : "error";
+
       setFiles(prev => prev.map(f =>
         f.name === file.name ? {
           ...f,
           status: newStatus,
           message: res.data.message,
+          jobId,
           entities: res.data.entities,
         } : f
       ));
+
+      // Auto-poll if queued
+      if (newStatus === "queued" && jobId) {
+        pollJob(file.name, jobId);
+      }
     } catch (err: any) {
       setFiles(prev => prev.map(f =>
         f.name === file.name ? { ...f, status: "error", message: err.response?.data?.detail || "Upload failed." } : f
       ));
     }
-  }, []);
+  }, [pollJob]);
 
   function handleFiles(list: FileList | null) {
     if (!list) return;

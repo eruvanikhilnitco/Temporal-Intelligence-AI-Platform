@@ -5,6 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [4.7.0] — 2026-04-08
+
+### Added — UI Overhaul (Admin, Chat, Sidebar, Upload)
+
+#### ChatInterface
+- **Admin mode banner**: Thin red banner at top of chat when logged in as admin — "Admin Mode — Full document access enabled". RoleSelector moved into banner.
+- **Provider pill**: Each AI message shows which LLM answered (Cohere / OpenAI fallback / Static fallback) as a small colored badge in the tags row.
+- **Grounding score display**: Numeric score (e.g. "Ground: 82%") shown next to confidence badge for all messages where score < 100%.
+- **Rate limit countdown**: When HTTP 429 is received, send button replaced with a live countdown timer (e.g. "47s") that auto-re-enables when the window resets.
+- **Feedback toast**: After thumbs up/down, a 2.5s toast confirms "Thanks for your feedback!" or "Feedback noted — we'll improve!"
+- **"New Chat" button**: Bottom of history sidebar — clearer label with `+` icon, starts a fresh session.
+- **Copy toast** consolidated alongside feedback toast; both rendered in a fixed bottom-right stack.
+- Removed unused `Loader2`, `History` imports.
+
+#### AdminPanel
+- **API Keys tab** (new): Full CRUD for external integration keys. Table shows name, prefix, permissions, request count, last used, expiry, status. Create form with name/permissions/expiry/notes. Raw key shown once in a masked + copy-to-clipboard panel. Revoke via `X` button with confirm dialog.
+- **ConfirmDialog component**: Modal dialog (Cancel / Confirm) replaces `window.confirm` for all destructive actions — delete rule, revoke API key.
+- **Ingest Queue panel** in Monitoring tab: Live list of last 20 background jobs with color-coded status badges (done/processing/queued/error), file name, elapsed time, error message.
+- **User search bar**: Filter users table by email or name in real time.
+- **Tab bar updated**: Added "API Keys" tab (Key icon), renamed "Chunks (Qdrant)" → "Chunks", "Storage Info" → "Storage".
+
+#### Sidebar
+- **Collapse to icon-only mode**: Toggle button (`<<` / `>>`) collapses sidebar from 240px to 64px. Icons remain clickable with tooltips. Unread alerts badge shows as dot in collapsed mode. Quote removed from footer.
+
+#### DocumentUpload
+- **Auto-poll ingest status**: After a file is queued, polls `/upload/status/{job_id}` every 3 seconds until `done` or `error` (max 3 min), then updates the file card in place.
+- **"Unchanged" state**: Files skipped by the version hash check show a yellow "No changes detected — skipped re-processing" message with a distinct border.
+- **Clearer status indicators**: "done" state shows green "✓ Ready — you can now search this document". Queued shows pulsing yellow bar while polling. Error shows message in red.
+
+---
+
 ## [4.6.0] — 2026-04-08
 
 ### Added

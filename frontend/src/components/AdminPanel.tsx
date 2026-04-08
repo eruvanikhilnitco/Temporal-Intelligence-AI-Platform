@@ -3,11 +3,13 @@ import {
   Shield, Users, AlertTriangle, Server, Database, GitBranch,
   Zap, Plus, Trash2, UserX, UserCheck, Lock,
   Activity, FileText, RefreshCw, Check,
-  BarChart3, HardDrive, Search, Layers, ChevronDown, ChevronRight, FolderOpen, Folder
+  BarChart3, HardDrive, Search, Layers, ChevronDown, ChevronRight, FolderOpen, Folder,
+  Key, X, Copy, Eye, EyeOff
 } from "lucide-react";
 import axios from "axios";
 
-type Tab = "overview" | "users" | "security" | "rules" | "monitoring" | "chunks" | "storage";
+type Tab = "overview" | "users" | "security" | "rules" | "monitoring" | "chunks" | "storage" | "apikeys";
+interface ApiKeyRecord { id: string; name: string; key_prefix: string; permissions: string; is_active: boolean; expires_at?: string; last_used_at?: string; total_requests: number; notes?: string }
 
 interface Rule { id: string; name: string; pattern: string; action: string; role: string; active: boolean; created_at?: string }
 interface SecurityEvent { id: string; user_email?: string; event_type: string; severity: string; description: string; query?: string; resolved: boolean; created_at: string }
@@ -200,6 +202,83 @@ function ChunksTab({ chunks, loading, search, setSearch, onSearch, onRefresh }: 
   );
 }
 
+// ── Ingest Queue Panel ────────────────────────────────────────────────────────
+function IngestQueuePanel({ authHeaders }: { authHeaders: () => Record<string, string> }) {
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await axios.get("/upload/status/all", { headers: authHeaders() });
+      setJobs(Array.isArray(res.data) ? res.data.slice(0, 20) : []);
+    } catch { setJobs([]); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const badge: Record<string, string> = {
+    done: "bg-emerald-500/20 text-emerald-300",
+    processing: "bg-yellow-500/20 text-yellow-300 animate-pulse",
+    queued: "bg-blue-500/20 text-blue-300",
+    error: "bg-red-500/20 text-red-300",
+  };
+
+  return (
+    <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-semibold text-white flex items-center gap-2">
+          <Activity size={15} className="text-brand-400" /> Background Ingest Queue
+        </h3>
+        <button onClick={load} disabled={loading} className="p-1.5 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition">
+          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+        </button>
+      </div>
+      {jobs.length === 0 ? (
+        <p className="text-sm text-gray-500">No recent jobs. Upload a file to see activity here.</p>
+      ) : (
+        <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+          {jobs.map((j: any) => (
+            <div key={j.job_id} className="flex items-center gap-3 bg-gray-900/50 rounded-lg px-3 py-2">
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${badge[j.status] || "bg-gray-600/30 text-gray-400"}`}>
+                {j.status}
+              </span>
+              <span className="text-xs text-gray-300 flex-1 truncate">{j.file?.split("/").pop() || j.file || "—"}</span>
+              {j.elapsed_s != null && <span className="text-xs text-gray-500 shrink-0">{j.elapsed_s}s</span>}
+              {j.error && <span className="text-xs text-red-400 shrink-0 truncate max-w-[120px]" title={j.error}>{j.error}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Confirm Dialog ────────────────────────────────────────────────────────────
+function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+        <div className="flex items-start gap-3 mb-5">
+          <AlertTriangle size={20} className="text-yellow-400 shrink-0 mt-0.5" />
+          <p className="text-sm text-gray-200 leading-relaxed">{message}</p>
+        </div>
+        <div className="flex gap-3">
+          <button onClick={onCancel}
+            className="flex-1 px-4 py-2 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition">
+            Cancel
+          </button>
+          <button onClick={onConfirm}
+            className="flex-1 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-500 rounded-lg transition">
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 function TabBar({ active, setActive }: { active: Tab; setActive: (t: Tab) => void }) {
   const tabs: { id: Tab; label: string; icon: React.ComponentType<any> }[] = [
@@ -207,9 +286,10 @@ function TabBar({ active, setActive }: { active: Tab; setActive: (t: Tab) => voi
     { id: "users", label: "Users", icon: Users },
     { id: "security", label: "Security", icon: Shield },
     { id: "rules", label: "Rule Engine", icon: Lock },
+    { id: "apikeys", label: "API Keys", icon: Key },
     { id: "monitoring", label: "Monitoring", icon: Activity },
-    { id: "chunks", label: "Chunks (Qdrant)", icon: Layers },
-    { id: "storage", label: "Storage Info", icon: HardDrive },
+    { id: "chunks", label: "Chunks", icon: Layers },
+    { id: "storage", label: "Storage", icon: HardDrive },
   ];
   return (
     <div className="flex gap-1 border-b border-gray-800 px-6 pt-1 shrink-0 overflow-x-auto">
@@ -229,9 +309,22 @@ function TabBar({ active, setActive }: { active: Tab; setActive: (t: Tab) => voi
 export default function AdminPanel({ user }: { user?: any }) {
   const [tab, setTab] = useState<Tab>("overview");
 
+  // Confirm dialog
+  const [confirm, setConfirm] = useState<{ message: string; onConfirm: () => void } | null>(null);
+  const askConfirm = (message: string, onConfirm: () => void) => setConfirm({ message, onConfirm });
+
   // Users
   const [users, setUsers] = useState<any[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [userSearch, setUserSearch] = useState("");
+
+  // API Keys
+  const [apiKeys, setApiKeys] = useState<ApiKeyRecord[]>([]);
+  const [apiKeysLoading, setApiKeysLoading] = useState(false);
+  const [newKeyForm, setNewKeyForm] = useState({ name: "", permissions: "read", expires_days: 365, notes: "" });
+  const [showNewKeyForm, setShowNewKeyForm] = useState(false);
+  const [createdKey, setCreatedKey] = useState<string | null>(null);
+  const [showRawKey, setShowRawKey] = useState(false);
 
   // Rules
   const [rules, setRules] = useState<Rule[]>([]);
@@ -347,6 +440,34 @@ export default function AdminPanel({ user }: { user?: any }) {
     finally { setChunksLoading(false); }
   }, []);
 
+  const fetchApiKeys = useCallback(async () => {
+    setApiKeysLoading(true);
+    try {
+      const res = await axios.get("/admin/api-keys", { headers: authHeaders() });
+      setApiKeys(Array.isArray(res.data) ? res.data : []);
+    } catch { setApiKeys([]); }
+    finally { setApiKeysLoading(false); }
+  }, []);
+
+  const createApiKey = async () => {
+    if (!newKeyForm.name) return;
+    try {
+      const res = await axios.post("/admin/api-keys", newKeyForm, { headers: authHeaders() });
+      setCreatedKey(res.data.raw_key || null);
+      setShowNewKeyForm(false);
+      setNewKeyForm({ name: "", permissions: "read", expires_days: 365, notes: "" });
+      fetchApiKeys();
+    } catch { /* ignore */ }
+  };
+
+  const revokeApiKey = (id: string, name: string) => {
+    askConfirm(`Revoke API key "${name}"? All apps using it will lose access immediately.`, async () => {
+      try { await axios.delete(`/admin/api-keys/${id}`, { headers: authHeaders() }); } catch { /* ignore */ }
+      fetchApiKeys();
+      setConfirm(null);
+    });
+  };
+
   const fetchStorage = useCallback(async () => {
     setStorageLoading(true);
     try {
@@ -377,6 +498,7 @@ export default function AdminPanel({ user }: { user?: any }) {
     if (tab === "users") fetchUsers();
     if (tab === "rules") fetchRules();
     if (tab === "security") { fetchSecEvents(); fetchErrorLog(); }
+    if (tab === "apikeys") fetchApiKeys();
     if (tab === "monitoring") { fetchAnalytics(); fetchCacheStats(); }
     if (tab === "chunks") fetchChunks();
     if (tab === "storage") fetchStorage();
@@ -403,11 +525,12 @@ export default function AdminPanel({ user }: { user?: any }) {
     }
   }
 
-  async function deleteRule(id: string) {
-    try {
-      await axios.delete(`/admin/rules/${id}`, { headers: authHeaders() });
-    } catch { /* ignore */ }
-    setRules(prev => prev.filter(r => r.id !== id));
+  function deleteRule(id: string, name: string) {
+    askConfirm(`Delete rule "${name}"? This cannot be undone.`, async () => {
+      try { await axios.delete(`/admin/rules/${id}`, { headers: authHeaders() }); } catch { /* ignore */ }
+      setRules(prev => prev.filter(r => r.id !== id));
+      setConfirm(null);
+    });
   }
 
   async function toggleRule(id: string) {
@@ -438,6 +561,13 @@ export default function AdminPanel({ user }: { user?: any }) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {confirm && (
+        <ConfirmDialog
+          message={confirm.message}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
       <TabBar active={tab} setActive={setTab} />
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
 
@@ -540,6 +670,14 @@ export default function AdminPanel({ user }: { user?: any }) {
 
         {/* ── USERS ── */}
         {tab === "users" && (
+          <div className="space-y-4">
+            {/* Search bar */}
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input value={userSearch} onChange={e => setUserSearch(e.target.value)}
+                placeholder="Search by email or name…"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500" />
+            </div>
           <div className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
               <h3 className="font-semibold text-white flex items-center gap-2"><Users size={16} /> User Management</h3>
@@ -560,7 +698,7 @@ export default function AdminPanel({ user }: { user?: any }) {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-700/50">
-                    {users.map(u => (
+                    {users.filter(u => !userSearch || u.email?.toLowerCase().includes(userSearch.toLowerCase()) || u.name?.toLowerCase().includes(userSearch.toLowerCase())).map(u => (
                       <tr key={u.id} className="hover:bg-gray-700/30 transition">
                         <td className="py-3.5 px-4 text-white">
                           <div className="flex items-center gap-2">
@@ -616,6 +754,7 @@ export default function AdminPanel({ user }: { user?: any }) {
                 </table>
               </div>
             )}
+          </div>
           </div>
         )}
 
@@ -818,8 +957,9 @@ export default function AdminPanel({ user }: { user?: any }) {
                             }`}>{rule.active ? "Active" : "Disabled"}</button>
                         </td>
                         <td className="py-3.5 px-4">
-                          <button onClick={() => deleteRule(rule.id)}
-                            className="p-1.5 hover:bg-red-500/20 rounded text-gray-500 hover:text-red-400 transition">
+                          <button onClick={() => deleteRule(rule.id, rule.name)}
+                            className="p-1.5 hover:bg-red-500/20 rounded text-gray-500 hover:text-red-400 transition"
+                            title="Delete rule">
                             <Trash2 size={13} />
                           </button>
                         </td>
@@ -831,6 +971,145 @@ export default function AdminPanel({ user }: { user?: any }) {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ── API KEYS ── */}
+        {tab === "apikeys" && (
+          <div className="space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2"><Key size={18} className="text-brand-400" /> API Key Management</h3>
+                <p className="text-xs text-gray-400 mt-0.5">Generate keys so external apps or chatbots can integrate with CortexFlow without a login.</p>
+              </div>
+              <button onClick={() => { setShowNewKeyForm(!showNewKeyForm); setCreatedKey(null); }}
+                className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition">
+                <Plus size={14} /> Create Key
+              </button>
+            </div>
+
+            {/* Create key form */}
+            {showNewKeyForm && (
+              <div className="bg-gray-800 border border-brand-500/30 rounded-xl p-5 space-y-4">
+                <h4 className="text-sm font-semibold text-white">New API Key</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Key Name *</label>
+                    <input placeholder="e.g. My Chatbot" value={newKeyForm.name}
+                      onChange={e => setNewKeyForm(p => ({ ...p, name: e.target.value }))}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Permissions</label>
+                    <select value={newKeyForm.permissions}
+                      onChange={e => setNewKeyForm(p => ({ ...p, permissions: e.target.value }))}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+                      <option value="read">Read — can only ask questions</option>
+                      <option value="read_write">Read & Write — can also upload</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Expires In (days)</label>
+                    <input type="number" min={1} max={3650} value={newKeyForm.expires_days}
+                      onChange={e => setNewKeyForm(p => ({ ...p, expires_days: parseInt(e.target.value) || 365 }))}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Notes (optional)</label>
+                    <input placeholder="e.g. Customer portal" value={newKeyForm.notes}
+                      onChange={e => setNewKeyForm(p => ({ ...p, notes: e.target.value }))}
+                      className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-brand-500" />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={createApiKey} className="flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition">
+                    <Check size={13} /> Generate Key
+                  </button>
+                  <button onClick={() => setShowNewKeyForm(false)} className="px-4 py-2 text-gray-400 hover:text-white text-sm transition">Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* Raw key shown once */}
+            {createdKey && (
+              <div className="bg-emerald-900/20 border border-emerald-600/40 rounded-xl p-5 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Check size={16} className="text-emerald-400" />
+                  <p className="text-sm font-semibold text-emerald-300">API Key Created — copy it now, it won't be shown again</p>
+                </div>
+                <div className="flex items-center gap-2 bg-gray-900 rounded-lg px-3 py-2.5">
+                  <code className="flex-1 text-sm text-emerald-300 font-mono break-all">
+                    {showRawKey ? createdKey : "cf_live_" + "•".repeat(36)}
+                  </code>
+                  <button onClick={() => setShowRawKey(v => !v)} className="text-gray-500 hover:text-gray-300 transition shrink-0">
+                    {showRawKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                  <button onClick={() => navigator.clipboard.writeText(createdKey)}
+                    className="flex items-center gap-1 text-xs text-brand-400 hover:text-brand-300 transition shrink-0">
+                    <Copy size={13} /> Copy
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">Add this as an <code className="text-brand-300">X-API-Key</code> header in your HTTP requests.</p>
+                <button onClick={() => setCreatedKey(null)} className="text-xs text-gray-500 hover:text-gray-300 transition">Dismiss</button>
+              </div>
+            )}
+
+            {/* Keys table */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden">
+              {apiKeysLoading ? (
+                <div className="p-8 text-center text-gray-400 text-sm">Loading keys…</div>
+              ) : apiKeys.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  <Key size={36} className="mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">No API keys yet. Create one to let external apps connect.</p>
+                </div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-900/50">
+                    <tr>
+                      {["Name", "Prefix", "Permissions", "Requests", "Last Used", "Expires", "Status", ""].map(h => (
+                        <th key={h} className="text-left py-3 px-4 text-xs font-medium text-gray-400 uppercase tracking-wider">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-700/50">
+                    {apiKeys.map(k => (
+                      <tr key={k.id} className="hover:bg-gray-700/30 transition">
+                        <td className="py-3.5 px-4 text-white font-medium">{k.name}</td>
+                        <td className="py-3.5 px-4"><code className="text-xs bg-gray-900 text-brand-300 px-2 py-0.5 rounded">{k.key_prefix}…</code></td>
+                        <td className="py-3.5 px-4">
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${k.permissions === "read_write" ? "bg-purple-500/20 text-purple-300" : "bg-blue-500/20 text-blue-300"}`}>
+                            {k.permissions === "read_write" ? "Read & Write" : "Read only"}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-gray-400 text-xs">{k.total_requests ?? 0}</td>
+                        <td className="py-3.5 px-4 text-gray-400 text-xs">{k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "Never"}</td>
+                        <td className="py-3.5 px-4 text-gray-400 text-xs">{k.expires_at ? new Date(k.expires_at).toLocaleDateString() : "Never"}</td>
+                        <td className="py-3.5 px-4">
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${k.is_active ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300"}`}>
+                            {k.is_active ? "Active" : "Revoked"}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          {k.is_active && (
+                            <button onClick={() => revokeApiKey(k.id, k.name)}
+                              className="p-1.5 hover:bg-red-500/20 rounded text-gray-500 hover:text-red-400 transition" title="Revoke key">
+                              <X size={13} />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 text-xs text-gray-400 space-y-1">
+              <p className="font-medium text-gray-300 mb-2">How to use an API key</p>
+              <p>Add the header <code className="text-brand-300 bg-gray-900 px-1 rounded">X-API-Key: cf_live_…</code> to any request to <code className="text-brand-300 bg-gray-900 px-1 rounded">/ask</code></p>
+              <p>Example: <code className="text-brand-300 bg-gray-900 px-1 rounded">curl -X POST /ask -H "X-API-Key: cf_live_…" -d {'{"question":"..."}'}</code></p>
             </div>
           </div>
         )}
@@ -889,6 +1168,9 @@ export default function AdminPanel({ user }: { user?: any }) {
                 ))}
               </div>
             </div>
+
+            {/* Live Ingest Queue */}
+            <IngestQueuePanel authHeaders={authHeaders} />
           </div>
         )}
 

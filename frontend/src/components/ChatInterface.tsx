@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
-  Send, Bot, User, Loader2, Network, FileText, ChevronDown, ChevronUp,
-  Copy, ThumbsUp, ThumbsDown, Sparkles, RefreshCw, CheckCircle, History, Square
+  Send, Bot, User, Network, FileText, ChevronDown, ChevronUp,
+  Copy, ThumbsUp, ThumbsDown, Sparkles, RefreshCw, CheckCircle, Square, Plus
 } from "lucide-react";
 import RoleSelector from "./RoleSelector";
 import axios from "axios";
@@ -76,8 +76,27 @@ function ConfidenceBadge({ score }: { score: number }) {
     : score >= 65 ? "text-yellow-400 bg-yellow-400/10 border-yellow-400/20"
     : "text-red-400 bg-red-400/10 border-red-400/20";
   return (
-    <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border ${color}`}>
+    <span title="How confident the AI is that this answer comes from your documents"
+      className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border cursor-help ${color}`}>
       <Sparkles size={10} /> {score}%
+    </span>
+  );
+}
+
+// ── Provider pill ─────────────────────────────────────────────────────────────
+function ProviderPill({ provider, fallback }: { provider?: string; fallback?: boolean }) {
+  if (!provider) return null;
+  const isCohere = provider.toLowerCase().includes("cohere");
+  const isStatic = provider.toLowerCase().includes("static") || provider.toLowerCase().includes("emergency");
+  const style = isStatic
+    ? "text-red-300 bg-red-500/10 border-red-500/20"
+    : fallback
+    ? "text-yellow-300 bg-yellow-500/10 border-yellow-500/20"
+    : "text-sky-300 bg-sky-500/10 border-sky-500/20";
+  const label = isStatic ? "Static fallback" : fallback ? `${provider} (fallback)` : provider;
+  return (
+    <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full border ${style}`}>
+      {label}
     </span>
   );
 }
@@ -174,12 +193,21 @@ function MessageBubble({
                     <Network size={10} /> Graph
                   </span>
                 )}
-                {msg.queryType && (
+                {msg.queryType && msg.queryType !== "greeting" && (
                   <span className="text-xs text-violet-300 bg-violet-400/10 border border-violet-400/20 px-2 py-0.5 rounded-full capitalize">
                     {msg.queryType}
                   </span>
                 )}
                 {msg.confidence !== undefined && <ConfidenceBadge score={msg.confidence} />}
+                {msg.providerUsed && (
+                  <ProviderPill provider={msg.providerUsed} fallback={msg.fallbackUsed} />
+                )}
+                {msg.groundingScore != null && msg.groundingScore < 1 && (
+                  <span title="Grounding score — how well the answer is supported by documents"
+                    className="text-xs text-gray-400 bg-gray-700 px-2 py-0.5 rounded-full cursor-help">
+                    Ground: {(msg.groundingScore * 100).toFixed(0)}%
+                  </span>
+                )}
               </div>
 
               {/* Content */}
@@ -262,11 +290,13 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
   const [role, setRole] = useState<Role>(effectiveRole);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState("");
-  const [showHistory, setShowHistory] = useState(false);
+  const [feedbackToast, setFeedbackToast] = useState("");
+  const [rateLimitSeconds, setRateLimitSeconds] = useState(0);
   const [history, setHistory] = useState<any[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const rateLimitTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -294,6 +324,8 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
       setMessages(prev =>
         prev.map(m => m.id === msgId ? { ...m, feedback: type } : m)
       );
+      setFeedbackToast(type === "positive" ? "👍 Thanks for your feedback!" : "👎 Feedback noted — we'll improve!");
+      setTimeout(() => setFeedbackToast(""), 2500);
     } catch {
       // silently fail
     }
@@ -335,7 +367,6 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
       feedback: item.feedback || null,
     };
     setMessages(prev => [...prev, userMsg, aiMsg]);
-    setShowHistory(false);
   }, []);
 
   // Simulate streaming from server response
@@ -400,8 +431,19 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
 
       if (res.status === 429) {
         const errData = await res.json().catch(() => ({}));
-        const retryAfter = res.headers.get("Retry-After");
-        const detail = errData.detail || `Rate limit exceeded. Please wait${retryAfter ? ` ${retryAfter}s` : " a while"} before retrying.`;
+        const retryAfterHeader = res.headers.get("Retry-After");
+        const secs = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 60;
+        if (!isNaN(secs) && secs > 0) {
+          setRateLimitSeconds(secs);
+          if (rateLimitTimerRef.current) clearInterval(rateLimitTimerRef.current);
+          rateLimitTimerRef.current = setInterval(() => {
+            setRateLimitSeconds(prev => {
+              if (prev <= 1) { clearInterval(rateLimitTimerRef.current!); rateLimitTimerRef.current = null; return 0; }
+              return prev - 1;
+            });
+          }, 1000);
+        }
+        const detail = errData.detail || `Rate limit exceeded. Please wait ${secs}s before retrying.`;
         throw new Error(detail);
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -485,7 +527,7 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
       <div className="w-56 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
           <p className="text-xs font-semibold text-gray-300 uppercase tracking-wider">History</p>
-          <button onClick={clearHistory} title="Clear chat" className="p-1 hover:bg-gray-800 rounded text-gray-600 hover:text-gray-400 transition">
+          <button onClick={clearHistory} title="Clear visible chat" className="p-1 hover:bg-gray-800 rounded text-gray-600 hover:text-gray-400 transition">
             <RefreshCw size={12} />
           </button>
         </div>
@@ -510,32 +552,58 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
           )}
         </div>
         <div className="px-4 py-3 border-t border-gray-800">
-          <button onClick={() => { setMessages([{ id: "welcome", role: "assistant", content: welcomeMsg, timestamp: new Date(), graphUsed: false, confidence: 100, queryType: "greeting", sources: [] }]); setInput(""); }}
-            className="w-full text-xs text-gray-500 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-lg px-3 py-2 transition text-left">
-            + New conversation
+          <button
+            onClick={() => { setMessages([{ id: "welcome", role: "assistant", content: welcomeMsg, timestamp: new Date(), graphUsed: false, confidence: 100, queryType: "greeting", sources: [] }]); setInput(""); }}
+            className="w-full flex items-center gap-2 text-xs text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg px-3 py-2 transition"
+          >
+            <Plus size={12} /> New Chat
           </button>
         </div>
       </div>
 
       {/* ── Right chat pane ── */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Toolbar */}
-        <div className="flex items-center justify-end px-4 py-2 border-b border-gray-800 shrink-0 bg-gray-900/50 gap-2">
-          {isAdmin && <RoleSelector role={role} onChange={setRole} />}
-        </div>
+        {/* Admin mode banner */}
+        {isAdmin && (
+          <div className="shrink-0 bg-red-900/30 border-b border-red-700/40 px-4 py-1.5 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+            <span className="text-xs text-red-300 font-medium">Admin Mode — Full document access enabled</span>
+            <div className="ml-auto">
+              <RoleSelector role={role} onChange={setRole} />
+            </div>
+          </div>
+        )}
+
+        {/* Toolbar (non-admin) */}
+        {!isAdmin && (
+          <div className="flex items-center justify-end px-4 py-2 border-b border-gray-800 shrink-0 bg-gray-900/50 gap-2">
+            <span className="text-xs text-gray-500">Ask anything about your documents</span>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto chat-scroll px-4 md:px-6 py-5 space-y-5">
           {messages.map(msg => (
             <MessageBubble key={msg.id} msg={msg} onCopy={copyText} onFeedback={submitFeedback} />
           ))}
-          {copied && (
-            <div className="fixed bottom-24 right-6 bg-gray-800 border border-gray-700 text-xs text-emerald-400 px-3 py-1.5 rounded-lg shadow flex items-center gap-1.5">
-              <CheckCircle size={11} /> Copied!
-            </div>
-          )}
           <div ref={bottomRef} />
         </div>
+
+        {/* Toast notifications */}
+        {(copied || feedbackToast) && (
+          <div className="fixed bottom-24 right-6 flex flex-col gap-2 z-50">
+            {copied && (
+              <div className="bg-gray-800 border border-gray-700 text-xs text-emerald-400 px-3 py-1.5 rounded-lg shadow flex items-center gap-1.5">
+                <CheckCircle size={11} /> Copied!
+              </div>
+            )}
+            {feedbackToast && (
+              <div className="bg-gray-800 border border-gray-700 text-xs text-brand-300 px-3 py-1.5 rounded-lg shadow">
+                {feedbackToast}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Suggestions */}
         {messages.length <= 1 && (
@@ -573,6 +641,12 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
                 title="Stop generating">
                 <Square size={18} />
               </button>
+            ) : rateLimitSeconds > 0 ? (
+              <button disabled
+                className="bg-gray-700 text-gray-400 rounded-xl px-3 py-3 transition shrink-0 text-xs font-medium min-w-[48px] text-center"
+                title="Rate limit — please wait">
+                {rateLimitSeconds}s
+              </button>
             ) : (
               <button onClick={() => handleSend()} disabled={!input.trim()}
                 className="bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl p-3 transition shrink-0 shadow-lg shadow-brand-600/20">
@@ -581,9 +655,11 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
             )}
           </div>
           <p className="text-xs text-gray-600 text-center mt-2">
-            {isAdmin
-              ? <>Role: <span className="text-red-400 capitalize">{role}</span> · Full retrieval · Enter to send</>
-              : <>Summarized responses · Enter to send · Shift+Enter for new line</>}
+            {rateLimitSeconds > 0
+              ? <span className="text-yellow-500">⏱ Rate limit active — retry in {rateLimitSeconds}s</span>
+              : isAdmin
+              ? <>Role: <span className="text-red-400 capitalize">{role}</span> · Enter to send · Shift+Enter new line</>
+              : <>Enter to send · Shift+Enter for new line</>}
           </p>
         </div>
       </div>
