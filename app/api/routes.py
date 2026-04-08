@@ -740,10 +740,19 @@ def _update_user_risk(db: Session, user_id: str):
         db.rollback()
 
 
+# Matches requests for the FILE LIST — but NOT requests to read a specific document
+# (specific doc reads are handled by the EnhancedOrchestrator DOC_READ_INTENT)
 _FILE_LIST_RE = re.compile(
-    r"\b(list|show|display|what|which|all|get|give|tell).{0,30}(file|document|upload|doc)\b"
+    r"\b(list|show|display|what|which|all|get|give|tell).{0,30}(file|document|upload|doc)s?\b"
     r"|\b(uploaded|available)\s+(file|document|doc)s?\b"
     r"|\bfile\s*(list|name)s?\b",
+    re.IGNORECASE,
+)
+# Patterns that indicate a specific document read — skip file list for these
+_DOC_READ_RE = re.compile(
+    r"\b(show|display|read|print|give|fetch|get)\b.{0,50}\.(pdf|xml|txt|docx|json|csv|html|pptx|md)\b"
+    r"|whole\s+document|entire\s+document|every\s+line|as\s+it\s+is|full\s+content"
+    r"|contents?\s+of\s+\w",
     re.IGNORECASE,
 )
 _LOG_RE = re.compile(
@@ -762,7 +771,8 @@ def _try_admin_intent(question: str):
     q = question.strip()
 
     # ── Intent: list uploaded files ──────────────────────────────────────────
-    if _FILE_LIST_RE.search(q):
+    # Skip if the query is asking to read a specific document (let RAG handle it)
+    if _FILE_LIST_RE.search(q) and not _DOC_READ_RE.search(q):
         try:
             from services.document_reader import DocumentReader
             import os

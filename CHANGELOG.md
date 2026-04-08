@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [4.9.0] — 2026-04-08
+
+### Fixed
+
+#### Chat model wrong answer for specific document reads
+- `app/api/routes.py`: Added `_DOC_READ_RE` regex that detects queries asking to read a specific file (by extension, "whole document", "every line", "as it is", "full content")
+- `_try_admin_intent()`: Added guard — file list handler only runs when `_FILE_LIST_RE` matches AND `_DOC_READ_RE` does NOT match, so "show whole document from file.xml" correctly falls through to the EnhancedOrchestrator DOC_READ_INTENT path instead of returning the file list
+
+#### API Key 401 in Postman — confirmed working
+- All endpoints tested with `X-API-Key` header: `/api/verify`, `/ask`, `/upload`, `/admin/*` all return 200
+- Root cause was user had old/prefix-only key — generated fresh working key
+- Auth chain: `X-API-Key` header → `authenticate_api_key()` → SHA-256 hash compare → returns `tenant_id`, `role`, `permissions`
+
+#### Cache metrics
+- Cache stats correctly return 0 after backend restart (expected — in-memory cache is fresh)
+- `/admin/cache/stats` returns correct shape: `hit_rate_pct`, `active_entries`, `total_requests`, `memory_kb`
+- Cache populates after queries are made — verified via analytics endpoint (25.6% hit rate across 199 historical queries)
+
+#### Graph DB backend
+- Neo4j attempted on startup with 2s timeout; falls back to SQLite automatically
+- SQLite graph backend confirmed active and returning correct node counts in `/admin/system/health`
+- UI correctly labels as "Graph DB (SQLite)" per CLAUDE.md instructions
+
+---
+
 ## [4.8.0] — 2026-04-08
 
 ### Added — Multi-Tenant Isolation, SharePoint Graph API, API Key Tab Enhancements
