@@ -67,13 +67,15 @@ class SourceAnnotatedSearchTool:
         self.collection = collection_name
         self.embedder = embedder
 
-    def run(self, query: str, user_role: str, top_k: int = 10, file_filter: Optional[str] = None) -> ToolResult:
+    def run(self, query: str, user_role: str, top_k: int = 10, file_filter: Optional[str] = None, tenant_id: Optional[str] = None) -> ToolResult:
         t0 = time.time()
         try:
             vector = self.embedder.embed(query)
-            must_conditions = [
-                {"key": "access_roles", "match": {"value": user_role}}
-            ]
+            must_conditions = []
+            if user_role != "admin":
+                must_conditions.append({"key": "access_roles", "match": {"value": user_role}})
+            if tenant_id:
+                must_conditions.append({"key": "tenant_id", "match": {"value": tenant_id}})
             if file_filter:
                 must_conditions.append(
                     {"key": "file_name", "match": {"value": file_filter}}
@@ -82,7 +84,7 @@ class SourceAnnotatedSearchTool:
                 collection_name=self.collection,
                 query=vector,
                 limit=top_k,
-                query_filter={"must": must_conditions},
+                query_filter={"must": must_conditions} if must_conditions else None,
             )
             annotated = [
                 {
@@ -483,14 +485,14 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
                 # Retrieve from each mentioned document separately
                 for doc in state.mentioned_docs[:4]:  # cap at 4 docs
                     result = self._annotated_searcher.run(
-                        state.query, state.user_role, top_k=5, file_filter=doc
+                        state.query, state.user_role, top_k=5, file_filter=doc, tenant_id=state.tenant_id
                     )
                     if result.success:
                         state.annotated_chunks.extend(result.data)
             else:
                 # No specific docs mentioned — retrieve broadly and annotate
                 result = self._annotated_searcher.run(
-                    state.query, state.user_role, top_k=12
+                    state.query, state.user_role, top_k=12, tenant_id=state.tenant_id
                 )
                 if result.success:
                     state.annotated_chunks = result.data
@@ -518,16 +520,16 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
                 state.tools_used.append("GraphQueryTool[primary]")
                 state.reasoning_trace.append("Graph-primary retrieval executed")
                 # Still get some RAG context for grounding
-                doc_result = self.doc_tool.run(state.query, state.user_role)
+                doc_result = self.doc_tool.run(state.query, state.user_role, state.tenant_id)
                 if doc_result.success:
                     state.vector_results = doc_result.data[:3]
 
         elif decision == "hybrid":
             # Weighted fusion: run both and merge
-            doc_result = self.doc_tool.run(state.query, state.user_role)
+            doc_result = self.doc_tool.run(state.query, state.user_role, state.tenant_id)
             rag_chunks: List[Dict] = []
             if doc_result.success and self._annotated_searcher:
-                ann = self._annotated_searcher.run(state.query, state.user_role, top_k=8)
+                ann = self._annotated_searcher.run(state.query, state.user_role, top_k=8, tenant_id=state.tenant_id)
                 rag_chunks = ann.data if ann.success else []
             elif doc_result.success:
                 rag_chunks = [{"text": t, "score": 0.8} for t in (doc_result.data or [])]
@@ -595,7 +597,7 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
         if self._annotated_searcher and state.vector_results:
             try:
                 result = self._annotated_searcher.run(
-                    state.query, state.user_role, top_k=5
+                    state.query, state.user_role, top_k=5, tenant_id=state.tenant_id
                 )
                 if result.success and result.data:
                     state.sources = [
@@ -709,16 +711,20 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
         )
 
     def run(self, query: str, user_role: str = "user",
-            session_id: str = "") -> "EnhancedAgentState":
+            session_id: str = "",
+            conversation_history=None,
+            tenant_id=None) -> "EnhancedAgentState":
         t_start = time.time()
-        state = EnhancedAgentState(query=query, user_role=user_role, session_id=session_id)
+        state = EnhancedAgentState(query=query, user_role=user_role, session_id=session_id,
+                                   tenant_id=tenant_id,
+                                   conversation_history=conversation_history or [])
 
         # Skip cache for doc-read and cross-doc queries (freshness matters)
         is_doc_read_hint = bool(self.DOC_READ_INTENT.search(query))
         is_cross_doc_hint = bool(self._cross_tool.is_cross_doc_query(query))
 
         if not is_doc_read_hint and not is_cross_doc_hint:
-            cache_key = f"{user_role}:{query}"
+            cache_key = f"{tenant_id or user_role}:{query}"
             if self.cache.exists(cache_key):
                 cached = self.cache.get(cache_key)
                 if isinstance(cached, dict):
@@ -744,7 +750,7 @@ class EnhancedAgentOrchestrator(AgentOrchestrator):
 
         # Cache only standard queries
         if not state.needs_doc_read and not state.is_cross_doc:
-            cache_key = f"{user_role}:{query}"
+            cache_key = f"{tenant_id or user_role}:{query}"
             self.cache.set(cache_key, {
                 "answer": state.answer,
                 "confidence": state.confidence,

@@ -368,203 +368,153 @@ def get_entity_relations(
         return {"entity": entity_name, "relations": [], "count": 0}
 
 
-# ── SharePoint Ingestion ──────────────────────────────────────────────────────
+# ── SharePoint Ingestion (Microsoft Graph API) ────────────────────────────────
 
 class SharePointRequest(BaseModel):
     site_url: str
-    username: str
-    password: str
-    library_path: str = "Shared Documents"
+    library_name: str = "Shared Documents"
+    folder_path: str = ""           # optional sub-folder within library
+    file_types: List[str] = []      # empty = all supported types
+    recursive: bool = True
 
 
-def _ingest_via_office365_client(req: "SharePointRequest") -> dict:
+def _get_graph_token() -> str:
     """
-    Primary SharePoint strategy using Office365-REST-Python-Client.
-    Handles SharePoint Online (Office 365) with username/password credentials.
-    Traverses folders recursively and ingests all supported files.
+    Get an OAuth2 access token from Azure AD using client_credentials flow.
+    Reads SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET from env.
+    Raises RuntimeError if env vars are missing or token request fails.
     """
-    from office365.runtime.auth.user_credential import UserCredential
-    from office365.sharepoint.client_context import ClientContext
-    from app.services.rag_service import ingest_file
-
-    SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
-
-    # Parse the site URL — extract just the base origin + site path
-    site_url = req.site_url.rstrip("/")
-    # Remove page/query fragments — keep only scheme + host + /sites/xxx part
-    import re as _re
-    site_match = _re.match(r"(https?://[^/]+(?:/sites/[^/?#]*)?)", site_url)
-    clean_site = site_match.group(1) if site_match else site_url
-    logger.info(f"[SharePoint] Connecting to: {clean_site}")
-
-    credentials = UserCredential(req.username, req.password)
-    ctx = ClientContext(clean_site).with_credentials(credentials)
-
-    ingested = []
-    errors = []
-
-    def process_folder(folder_url: str):
-        """Recursively process a folder — yields (file_obj, relative_path) tuples."""
-        try:
-            folder = ctx.web.get_folder_by_server_relative_url(folder_url)
-            ctx.load(folder)
-            ctx.execute_query()
-        except Exception as e:
-            logger.warning(f"[SharePoint] Cannot access folder '{folder_url}': {e}")
-            return
-
-        # Process files in this folder
-        try:
-            files = folder.files
-            ctx.load(files)
-            ctx.execute_query()
-            for f in files:
-                yield f, folder_url
-        except Exception as e:
-            logger.warning(f"[SharePoint] Cannot list files in '{folder_url}': {e}")
-
-        # Recurse into subfolders
-        try:
-            subfolders = folder.folders
-            ctx.load(subfolders)
-            ctx.execute_query()
-            for sf in subfolders:
-                sf_name = sf.properties.get("Name", "")
-                if sf_name in ("Forms", "_private", "Attachments"):
-                    continue
-                sf_url = sf.properties.get("ServerRelativeUrl", "")
-                if sf_url:
-                    yield from process_folder(sf_url)
-        except Exception as e:
-            logger.warning(f"[SharePoint] Cannot list subfolders in '{folder_url}': {e}")
-
-    # Build server-relative path for the target library
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(clean_site)
-        site_relative = parsed.path.rstrip("/")
-        library_relative = f"{site_relative}/{req.library_path}"
-        logger.info(f"[SharePoint] Target folder: {library_relative}")
-    except Exception:
-        library_relative = f"/{req.library_path}"
-
-    for file_obj, parent_url in process_folder(library_relative):
-        file_name = file_obj.properties.get("Name", "")
-        file_url = file_obj.properties.get("ServerRelativeUrl", "")
-        ext = os.path.splitext(file_name)[1].lower()
-
-        if ext not in SUPPORTED_EXTS:
-            logger.debug(f"[SharePoint] Skipping unsupported file: {file_name}")
-            continue
-
-        try:
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                tmp_path = tmp.name
-
-            # Download file content via server-relative URL
-            with open(tmp_path, "wb") as fh:
-                ctx.web.get_file_by_server_relative_url(file_url).download(fh).execute_query()
-
-            try:
-                entities = ingest_file(tmp_path)
-                ingested.append({"file": file_name, "path": parent_url, "entities": entities})
-                logger.info(f"[SharePoint] Ingested: {file_name}")
-            except Exception as e:
-                errors.append({"file": file_name, "error": str(e)[:200]})
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-
-        except Exception as e:
-            errors.append({"file": file_name, "error": f"Download failed: {str(e)[:200]}"})
-
-    return {
-        "status": "complete",
-        "ingested": len(ingested),
-        "errors": len(errors),
-        "files": ingested,
-        "error_details": errors,
-        "auth_method": "Office365-REST-Python-Client",
-    }
-
-
-def _ingest_via_rest_api(req: "SharePointRequest") -> dict:
-    """
-    Fallback SharePoint strategy using direct REST API calls with cookie-based auth.
-    Works for on-premises SharePoint. For Online it attempts NTLM then basic.
-    """
-    from app.services.rag_service import ingest_file
     import requests as _req
 
+    tenant_id = os.getenv("SHAREPOINT_TENANT_ID", "")
+    client_id = os.getenv("SHAREPOINT_CLIENT_ID", "")
+    client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
+
+    if not (tenant_id and client_id and client_secret):
+        raise RuntimeError(
+            "SharePoint Graph API credentials not configured. "
+            "Set SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET in .env"
+        )
+
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    resp = _req.post(token_url, data={
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": "https://graph.microsoft.com/.default",
+    }, timeout=15)
+
+    if not resp.ok:
+        raise RuntimeError(f"Token request failed ({resp.status_code}): {resp.text[:300]}")
+
+    return resp.json()["access_token"]
+
+
+def _graph_get(url: str, token: str) -> dict:
+    import requests as _req
+    r = _req.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    if not r.ok:
+        raise RuntimeError(f"Graph API error {r.status_code}: {r.text[:300]}")
+    return r.json()
+
+
+def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
+    """
+    Ingest SharePoint files using Microsoft Graph API (client_credentials flow).
+    Credentials are read from .env — never from the request body.
+    """
+    import requests as _req
+    import tempfile as _tmp
+    from app.services.rag_service import ingest_file
+
     SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
-    site = req.site_url.rstrip("/")
-    headers = {"Accept": "application/json;odata=verbose"}
+    allowed_exts = (
+        {f".{t.lstrip('.')}" for t in req.file_types} & SUPPORTED_EXTS
+        if req.file_types else SUPPORTED_EXTS
+    )
+
+    token = _get_graph_token()
+
+    # Resolve site ID from URL
+    import re as _re
+    m = _re.search(r"https://([^/]+)/sites/([^/?#]+)", req.site_url)
+    if not m:
+        raise RuntimeError(f"Cannot parse site URL: {req.site_url}")
+    hostname, site_name = m.group(1), m.group(2)
+
+    site_info = _graph_get(
+        f"https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site_name}",
+        token,
+    )
+    site_id = site_info["id"]
+
+    # Find the drive (document library) by name
+    drives = _graph_get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", token)
+    drive = next(
+        (d for d in drives.get("value", []) if d.get("name") == req.library_name),
+        None,
+    )
+    if not drive:
+        # Fallback: use first drive
+        drive = drives.get("value", [{}])[0]
+    drive_id = drive.get("id", "")
+
     ingested: list = []
     errors: list = []
 
-    # Try NTLM first (on-prem), then basic
-    session = _req.Session()
-    try:
-        from requests_ntlm import HttpNtlmAuth
-        session.auth = HttpNtlmAuth(req.username, req.password)
-    except ImportError:
-        session.auth = (req.username, req.password)
-
-    def get_files(folder_url: str):
-        files_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Files"
-        try:
-            r = session.get(files_url, headers=headers, timeout=30, verify=True)
-            if r.ok:
-                for item in r.json().get("d", {}).get("results", []):
-                    yield item.get("ServerRelativeUrl", ""), item.get("Name", "")
-        except Exception as e:
-            logger.warning(f"[SharePoint-REST] List files failed: {e}")
-
-        folders_url = f"{site}/_api/web/GetFolderByServerRelativeUrl('{folder_url}')/Folders"
-        try:
-            r = session.get(folders_url, headers=headers, timeout=30, verify=True)
-            if r.ok:
-                for sf in r.json().get("d", {}).get("results", []):
-                    sf_url = sf.get("ServerRelativeUrl", "")
-                    sf_name = sf.get("Name", "")
-                    if sf_url and sf_name not in ("Forms",):
-                        yield from get_files(sf_url)
-        except Exception as e:
-            logger.warning(f"[SharePoint-REST] List folders failed: {e}")
-
-    # Build base folder path
-    import re as _re
-    site_match = _re.search(r"/sites/([^/?#]+)", site)
-    site_path = f"/sites/{site_match.group(1)}" if site_match else ""
-    base_folder = f"{site_path}/{req.library_path}" if site_path else f"/{req.library_path}"
-
-    for file_rel_url, file_name in get_files(base_folder):
-        ext = os.path.splitext(file_name)[1].lower()
-        if ext not in SUPPORTED_EXTS:
-            continue
-        dl_url = f"{site}/_api/web/GetFileByServerRelativeUrl('{file_rel_url}')/$value"
-        try:
-            dl = session.get(dl_url, timeout=60, verify=True)
-            if not dl.ok:
-                errors.append({"file": file_name, "error": f"HTTP {dl.status_code}"})
-                continue
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                tmp.write(dl.content)
-                tmp_path = tmp.name
-            try:
-                entities = ingest_file(tmp_path)
-                ingested.append({"file": file_name, "entities": entities})
-            except Exception as e:
-                errors.append({"file": file_name, "error": str(e)[:200]})
-            finally:
+    def traverse(item_id: str, depth: int = 0):
+        if depth > 10:
+            return
+        children = _graph_get(
+            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children",
+            token,
+        )
+        for item in children.get("value", []):
+            if "folder" in item:
+                if req.recursive:
+                    traverse(item["id"], depth + 1)
+            elif "file" in item:
+                name = item.get("name", "")
+                ext = os.path.splitext(name)[1].lower()
+                if ext not in allowed_exts:
+                    continue
+                dl_url = item.get("@microsoft.graph.downloadUrl", "")
+                if not dl_url:
+                    errors.append({"file": name, "error": "No download URL"})
+                    continue
                 try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-        except Exception as e:
-            errors.append({"file": file_name, "error": str(e)[:200]})
+                    dl = _req.get(dl_url, timeout=60)
+                    if not dl.ok:
+                        errors.append({"file": name, "error": f"HTTP {dl.status_code}"})
+                        continue
+                    with _tmp.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                        tmp.write(dl.content)
+                        tmp_path = tmp.name
+                    try:
+                        entities = ingest_file(tmp_path)
+                        ingested.append({"file": name, "entities": entities})
+                        logger.info("[SharePoint-Graph] Ingested: %s", name)
+                    except Exception as ie:
+                        errors.append({"file": name, "error": str(ie)[:200]})
+                    finally:
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    errors.append({"file": name, "error": str(e)[:200]})
+
+    # Start from folder_path or root
+    if req.folder_path:
+        root = _graph_get(
+            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{req.folder_path}",
+            token,
+        )
+        root_id = root["id"]
+    else:
+        root_id = "root"
+
+    traverse(root_id)
 
     return {
         "status": "complete",
@@ -572,8 +522,45 @@ def _ingest_via_rest_api(req: "SharePointRequest") -> dict:
         "errors": len(errors),
         "files": ingested,
         "error_details": errors,
-        "auth_method": "REST-API-fallback",
+        "auth_method": "Microsoft Graph API (client_credentials)",
     }
+
+
+
+
+@router.post("/sharepoint/test")
+def sharepoint_test(
+    req: SharePointRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Test Microsoft Graph API connection and return available document libraries.
+    Credentials come from .env (SHAREPOINT_TENANT_ID/CLIENT_ID/CLIENT_SECRET).
+    """
+    try:
+        token = _get_graph_token()
+        import re as _re
+        m = _re.search(r"https://([^/]+)/sites/([^/?#]+)", req.site_url)
+        if not m:
+            raise ValueError(f"Cannot parse site URL: {req.site_url}")
+        hostname, site_name = m.group(1), m.group(2)
+        site_info = _graph_get(
+            f"https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site_name}",
+            token,
+        )
+        site_id = site_info["id"]
+        drives = _graph_get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", token)
+        libraries = [{"id": d["id"], "name": d.get("name", ""), "driveType": d.get("driveType", "")}
+                     for d in drives.get("value", [])]
+        return {
+            "status": "connected",
+            "site_display_name": site_info.get("displayName", site_name),
+            "site_id": site_id,
+            "libraries": libraries,
+        }
+    except Exception as e:
+        logger.error("[SharePoint] Test connection failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Connection failed: {str(e)[:300]}")
 
 
 @router.post("/sharepoint/ingest")
@@ -582,42 +569,24 @@ def sharepoint_ingest(
     current_user: dict = Depends(require_admin),
 ):
     """
-    Connect to SharePoint Online or on-premises, recursively traverse all folders,
-    download every supported file, and ingest through the RAG pipeline.
-
-    Authentication strategy (tries in order):
-      1. Office365-REST-Python-Client with UserCredential (SharePoint Online)
-      2. REST API with NTLM/Basic auth (on-premises fallback)
+    Ingest SharePoint files via Microsoft Graph API (client_credentials flow).
+    Credentials (client_id, client_secret, tenant_id) are read from .env — NOT from the request.
     """
-    # Strategy 1: Office365-REST-Python-Client
     try:
-        result = _ingest_via_office365_client(req)
+        result = _ingest_via_graph_api(req)
         logger.info(
-            f"[SharePoint] Office365 client: {result['ingested']} ingested, "
-            f"{result['errors']} errors"
+            "[SharePoint] Graph API: %d ingested, %d errors",
+            result["ingested"], result["errors"],
         )
         return result
     except Exception as e:
-        logger.warning(f"[SharePoint] Office365 client failed: {e}. Trying REST fallback...")
-
-    # Strategy 2: REST API fallback
-    try:
-        result = _ingest_via_rest_api(req)
-        logger.info(
-            f"[SharePoint] REST fallback: {result['ingested']} ingested, "
-            f"{result['errors']} errors"
-        )
-        return result
-    except Exception as e:
-        logger.error(f"[SharePoint] All strategies failed: {e}")
+        logger.error("[SharePoint] Graph API ingestion failed: %s", e)
         raise HTTPException(
             status_code=502,
             detail=(
-                f"SharePoint connection failed: {str(e)[:300]}\n\n"
-                "Troubleshooting:\n"
-                "• Ensure site_url is the base site (e.g. https://company.sharepoint.com/sites/MySite)\n"
-                "• library_path should be the folder path within the site (e.g. 'Shared Documents/FERC Documents')\n"
-                "• Verify credentials have at least Read access to the library"
+                f"SharePoint ingestion failed: {str(e)[:300]}\n\n"
+                "Check that SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET "
+                "are set in .env and that the app registration has Sites.Read.All permission."
             ),
         )
 
@@ -1196,7 +1165,9 @@ def list_api_keys(
 ):
     """List all API keys (active and revoked). Raw key is never returned."""
     from services.api_key_service import list_api_keys as svc_list
-    return {"keys": svc_list(db), "total": db.query(ApiKey).count()}
+    keys = svc_list(db)
+    # Return flat list so frontend Array.isArray() works correctly
+    return keys
 
 
 @router.get("/api-keys/{key_id}")

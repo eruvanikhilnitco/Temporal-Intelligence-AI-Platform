@@ -132,23 +132,26 @@ class Phase1RAG:
         print(f"[INFO] Phase 3: graph ingestion complete for {len(doc_texts)} document(s)")
 
     # 🔥 QUERY (RBAC) — returns plain text list (backward-compatible)
-    def query(self, question: str, user_role: str = "user", top_k: int = 10):
-        return [c["text"] for c in self.query_with_sources(question, user_role, top_k)]
+    def query(self, question: str, user_role: str = "user", top_k: int = 10, tenant_id: str = None):
+        return [c["text"] for c in self.query_with_sources(question, user_role, top_k, tenant_id=tenant_id)]
 
     # SOURCE-ANNOTATED QUERY — returns list of {text, file_name, score}
-    def query_with_sources(self, question: str, user_role: str = "user", top_k: int = 10):
+    def query_with_sources(self, question: str, user_role: str = "user", top_k: int = 10, tenant_id: str = None):
         query_vector = self.embedder.embed(question)
 
-        # Admin sees ALL documents — no RBAC filter applied.
+        # Admin sees ALL documents — no RBAC filter applied (unless scoped to a tenant).
         # Non-admin roles are filtered to their own access level only.
-        if user_role == "admin":
-            query_filter = None
-        else:
-            query_filter = {
-                "must": [
-                    {"key": "access_roles", "match": {"value": user_role}}
-                ]
-            }
+        # API key clients always see only their own tenant's documents.
+        must_filters = []
+
+        if user_role != "admin":
+            must_filters.append({"key": "access_roles", "match": {"value": user_role}})
+
+        # Multi-tenant isolation: API key clients only see their own documents
+        if tenant_id:
+            must_filters.append({"key": "tenant_id", "match": {"value": tenant_id}})
+
+        query_filter = {"must": must_filters} if must_filters else None
 
         results = self.client.query_points(
             collection_name=self.collection_name,

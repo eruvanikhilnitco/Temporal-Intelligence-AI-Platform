@@ -160,6 +160,7 @@ def authenticate_api_key(db: Session, raw_key: str) -> Optional[dict]:
                 "role": "admin" if key.permissions == "read_write" else "user",
                 "key_id": key.id,
                 "key_name": key.name,
+                "tenant_id": key.id,          # unique tenant per API key
                 "permissions": key.permissions,
                 "auth_method": "api_key",
             }

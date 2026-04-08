@@ -5,6 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [4.8.0] — 2026-04-08
+
+### Added — Multi-Tenant Isolation, SharePoint Graph API, API Key Tab Enhancements
+
+#### Multi-Tenant Isolation (VERY IMPORTANT)
+- `IngestJob` dataclass: added `tenant_id: Optional[str]` field
+- `IngestQueue.submit()`: accepts and stores `tenant_id` per job
+- `IngestQueue._process_loop`: forwards `tenant_id` to `ingest_file()`
+- `/upload` and `/upload/batch` endpoints: extract `tenant_id = current_user.get("tenant_id")` and pass to queue
+- `phase1_rag.query()` and `query_with_sources()`: accept `tenant_id`, add Qdrant `must` filter so API key clients only retrieve their own documents
+- `AgentState`: added `tenant_id: Optional[str]` field
+- `AgentOrchestrator.run()`: accepts `tenant_id`; cache key is tenant-scoped (`tenant_id:query`)
+- `DocumentSearchTool.run()`: accepts and forwards `tenant_id` to retriever lambda
+- `AgentOrchestrator._node_retrieve()`: passes `state.tenant_id` to `doc_tool.run()`
+- `EnhancedAgentOrchestrator.run()`: accepts `tenant_id` and `conversation_history`; tenant-scoped cache key
+- `SourceAnnotatedSearchTool.run()`: accepts `tenant_id`, adds Qdrant filter; admin role bypasses RBAC filter
+- All `_annotated_searcher.run()` call sites pass `tenant_id=state.tenant_id`
+- `ask_rag_full()`: accepts and passes `tenant_id` through to orchestrator
+- `/ask` endpoint: extracts `tenant_id` from `current_user` and passes to `ask_rag_full()`
+
+#### SharePoint — Microsoft Graph API (client_credentials flow)
+- **Removed** username/password auth from `SharePointRequest` model and all backend functions
+- **New** `SharePointRequest` fields: `site_url`, `library_name`, `folder_path`, `file_types`, `recursive`
+- **New** `_get_graph_token()`: reads `SHAREPOINT_TENANT_ID/CLIENT_ID/CLIENT_SECRET` from `.env`, calls Azure AD token endpoint
+- **New** `_graph_get()`: authenticated GET helper for Graph API calls
+- **New** `_ingest_via_graph_api()`: resolves site → drive → traverses items recursively, downloads and ingests files
+- **New** `POST /admin/sharepoint/test`: tests connection, returns available document libraries for UI dropdown
+- `POST /admin/sharepoint/ingest`: now uses Graph API only; removed Office365-REST fallback
+- `.env`: added `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET` placeholders
+- **SharePointConnector** (frontend): completely redesigned — no credentials in form; 2-step flow: Site URL + "Test Connection" button → library dropdown auto-filled → folder/options → "Connect & Ingest Files"
+
+#### API Key Tab — Base URL, Docs, Analytics
+- **API Base URL panel**: shows `window.location.origin` with one-click copy
+- **API Documentation section**: 4 endpoints (verify, ask, upload, chat/history) shown with method badge, description, and copyable curl example
+- **Usage Analytics**: bar chart per active API key showing total_requests, last_used_at, permissions
+
+### Changed
+- `services/ingest_queue.py`: removed old Office365 client and REST API fallback helper functions
+- `app/api/admin_routes.py`: SharePoint section fully replaced with Graph API implementation
+
+---
+
 ## [4.7.0] — 2026-04-08
 
 ### Added — UI Overhaul (Admin, Chat, Sidebar, Upload)

@@ -36,6 +36,27 @@ def health():
     return HealthResponse(status="ok")
 
 
+@router.get("/api/verify")
+@router.post("/api/verify")
+def verify_api_key(current_user: dict = Depends(get_current_user)):
+    """
+    Simple endpoint to verify an API key is valid.
+    Use this in Postman to confirm your X-API-Key header works.
+
+    Returns your auth info (role, permissions, tenant) without running a query.
+    """
+    return {
+        "status": "authenticated",
+        "auth_method": current_user.get("auth_method"),
+        "role": current_user.get("role"),
+        "permissions": current_user.get("permissions"),
+        "tenant_id": current_user.get("tenant_id"),
+        "key_name": current_user.get("key_name"),
+        "user_id": current_user.get("user_id"),
+        "message": "API key is valid. You can now use /ask to query documents.",
+    }
+
+
 @router.post("/ask", response_model=AskResponse)
 def ask_question(
     req: AskRequest,
@@ -200,8 +221,10 @@ def ask_question(
         logger.warning("[Ask] Could not fetch conversation history: %s", e)
 
     # Use agent orchestrator
+    tenant_id = current_user.get("tenant_id")
     result = ask_rag_full(enriched_q, role, session_id=session_id,
-                          conversation_history=conversation_history or None)
+                          conversation_history=conversation_history or None,
+                          tenant_id=tenant_id)
 
     latency_ms = int((time.time() - t_start) * 1000)
 
@@ -512,10 +535,11 @@ async def upload_document(
         db.rollback()
 
     # Queue for background ingestion (returns immediately — no more 5-min waits)
+    tenant_id = current_user.get("tenant_id")
     try:
         from services.ingest_queue import get_ingest_queue
         q = get_ingest_queue()
-        job_id = q.submit(str(dest), original_filename=file.filename)
+        job_id = q.submit(str(dest), original_filename=file.filename, tenant_id=tenant_id)
         logger.info(f"[Upload] Queued '{file.filename}' as job {job_id}")
         version_label = f" (v{existing.version})" if existing else ""
         return UploadResponse(
@@ -594,8 +618,9 @@ async def upload_folder(
             continue
 
         # Queue immediately — never block the HTTP handler on ingestion
+        batch_tenant_id = current_user.get("tenant_id")
         try:
-            job_id = q.submit(str(dest), original_filename=file.filename)
+            job_id = q.submit(str(dest), original_filename=file.filename, tenant_id=batch_tenant_id)
             results.append({
                 "filename": file.filename,
                 "stored_as": raw_name,

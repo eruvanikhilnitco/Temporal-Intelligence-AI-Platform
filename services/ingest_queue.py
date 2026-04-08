@@ -32,6 +32,7 @@ class IngestJob:
     job_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     submitted_at: float = field(default_factory=time.time)
     original_filename: Optional[str] = None  # override stored filename
+    tenant_id: Optional[str] = None          # multi-tenant isolation tag
     callback: Optional[Callable[[str, Any], None]] = None
 
 
@@ -83,12 +84,14 @@ class IngestQueue:
         file_path: str,
         job_id: Optional[str] = None,
         original_filename: Optional[str] = None,
+        tenant_id: Optional[str] = None,
         callback: Optional[Callable] = None,
     ) -> str:
         job = IngestJob(
             file_path=file_path,
             job_id=job_id or str(uuid.uuid4()),
             original_filename=original_filename,
+            tenant_id=tenant_id,
             callback=callback,
         )
         with self._lock:
@@ -130,7 +133,7 @@ class IngestQueue:
 
             try:
                 from app.services.rag_service import ingest_file
-                entities = ingest_file(job.file_path)
+                entities = ingest_file(job.file_path, tenant_id=job.tenant_id)
                 elapsed = round(time.time() - t0, 2)
                 with self._lock:
                     self._results[job.job_id].update({

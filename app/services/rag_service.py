@@ -68,7 +68,8 @@ def ask_rag(question: str, role: str) -> str:
 
 
 def ask_rag_full(question: str, role: str, session_id: str = "",
-                 conversation_history: Optional[list] = None) -> dict:
+                 conversation_history: Optional[list] = None,
+                 tenant_id: Optional[str] = None) -> dict:
     """
     Full response with sources, confidence, query type, graph_used.
     Uses Agent Orchestrator when available, falls back to Phase1RAG.
@@ -79,7 +80,8 @@ def ask_rag_full(question: str, role: str, session_id: str = "",
     if orch is not None:
         try:
             state = orch.run(question, user_role=role, session_id=session_id,
-                             conversation_history=conversation_history)
+                             conversation_history=conversation_history,
+                             tenant_id=tenant_id)
             return {
                 "answer": state.answer,
                 "graph_used": bool(state.graph_context),
@@ -126,7 +128,7 @@ def ask_rag_full(question: str, role: str, session_id: str = "",
     }
 
 
-def ingest_file(file_path: str) -> Optional[dict]:
+def ingest_file(file_path: str, tenant_id: Optional[str] = None) -> Optional[dict]:
     """
     Ingest a single uploaded file into Qdrant and Neo4j.
     Returns extracted entity dict or None on error.
@@ -179,6 +181,9 @@ def ingest_file(file_path: str) -> Optional[dict]:
             "sensitivity": metadata.get("sensitivity", "low"),
             "classification_source": metadata.get("classification_source", "keyword"),
         }
+        # Multi-tenant isolation: tag every chunk with the uploading tenant's ID
+        if tenant_id:
+            payload["tenant_id"] = tenant_id
         points.append(
             PointStruct(
                 id=str(uuid.uuid4()),

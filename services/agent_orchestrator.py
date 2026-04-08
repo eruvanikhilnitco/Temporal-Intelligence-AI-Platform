@@ -49,10 +49,10 @@ class DocumentSearchTool:
     def __init__(self, retriever: Callable):
         self.retriever = retriever
 
-    def run(self, query: str, user_role: str) -> ToolResult:
+    def run(self, query: str, user_role: str, tenant_id: Optional[str] = None) -> ToolResult:
         t0 = time.time()
         try:
-            results = self.retriever(query, user_role)
+            results = self.retriever(query, user_role, tenant_id=tenant_id)
             return ToolResult(
                 tool_name="DocumentSearchTool",
                 success=True,
@@ -135,6 +135,7 @@ class AgentState:
     query: str
     user_role: str
     session_id: str = ""
+    tenant_id: Optional[str] = None          # multi-tenant isolation
     query_type: str = "fact"
     needs_graph: bool = False
     needs_calculator: bool = False
@@ -188,8 +189,10 @@ class AgentOrchestrator:
     ):
         self.rag = phase1_rag
         # B2: Two-stage retrieval — fetch 50 candidates, reranker narrows to top-5
+        # tenant_id is passed at query time via _node_retrieve
+        self._phase1_rag = phase1_rag
         self.doc_tool = DocumentSearchTool(
-            lambda q, role: phase1_rag.query(q, role, top_k=50)
+            lambda q, role, tenant_id=None: phase1_rag.query(q, role, top_k=50, tenant_id=tenant_id)
         )
         self.graph_tool = GraphQueryTool(graph_service) if graph_service else None
         self.summarizer = SummarizationTool()
@@ -203,15 +206,17 @@ class AgentOrchestrator:
 
     def run(self, query: str, user_role: str = "user",
             session_id: str = "",
-            conversation_history: Optional[list] = None) -> AgentState:
+            conversation_history: Optional[list] = None,
+            tenant_id: Optional[str] = None) -> AgentState:
         """Execute the full agent pipeline and return the final state."""
         t_start = time.time()
 
         state = AgentState(query=query, user_role=user_role, session_id=session_id,
+                           tenant_id=tenant_id,
                            conversation_history=conversation_history or [])
 
-        # Check cache first
-        cache_key = f"{user_role}:{query}"
+        # Cache key includes tenant_id so clients never see each other's cached results
+        cache_key = f"{tenant_id or user_role}:{query}"
         if self.cache.exists(cache_key):
             cached = self.cache.get(cache_key)
             if isinstance(cached, dict):
@@ -278,7 +283,7 @@ class AgentOrchestrator:
         with ThreadPoolExecutor(max_workers=6) as pool:
             # One future per sub-query (primary + decomposed)
             for sq in sub_queries:
-                f = pool.submit(self.doc_tool.run, sq, state.user_role)
+                f = pool.submit(self.doc_tool.run, sq, state.user_role, state.tenant_id)
                 futures_map[f] = ("doc", sq)
 
             # Graph lookup runs in the same pool

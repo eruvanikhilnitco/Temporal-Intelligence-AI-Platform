@@ -1106,11 +1106,93 @@ export default function AdminPanel({ user }: { user?: any }) {
               )}
             </div>
 
-            <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 text-xs text-gray-400 space-y-1">
-              <p className="font-medium text-gray-300 mb-2">How to use an API key</p>
-              <p>Add the header <code className="text-brand-300 bg-gray-900 px-1 rounded">X-API-Key: cf_live_…</code> to any request to <code className="text-brand-300 bg-gray-900 px-1 rounded">/ask</code></p>
-              <p>Example: <code className="text-brand-300 bg-gray-900 px-1 rounded">curl -X POST /ask -H "X-API-Key: cf_live_…" -d {'{"question":"..."}'}</code></p>
+            {/* API Base URL */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-2">
+              <p className="text-sm font-semibold text-white flex items-center gap-2">
+                <Server size={14} className="text-brand-400" /> API Base URL
+              </p>
+              <div className="flex items-center gap-2 bg-gray-900 rounded-lg px-3 py-2">
+                <code className="flex-1 text-sm text-brand-300 font-mono">{window.location.origin}</code>
+                <button onClick={() => navigator.clipboard.writeText(window.location.origin)}
+                  className="text-gray-500 hover:text-gray-300 transition shrink-0" title="Copy URL">
+                  <Copy size={13} />
+                </button>
+              </div>
+              <p className="text-xs text-gray-500">Use this as the base for all API requests when integrating from external apps.</p>
             </div>
+
+            {/* API Documentation */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <p className="text-sm font-semibold text-white flex items-center gap-2">
+                <FileText size={14} className="text-brand-400" /> API Documentation
+              </p>
+              {[
+                {
+                  method: "GET", path: "/api/verify", color: "text-emerald-400 bg-emerald-400/10",
+                  desc: "Verify your API key is valid",
+                  curl: `curl ${window.location.origin}/api/verify -H "X-API-Key: cf_live_…"`,
+                },
+                {
+                  method: "POST", path: "/ask", color: "text-blue-400 bg-blue-400/10",
+                  desc: "Ask a question — returns an AI answer based on your documents",
+                  curl: `curl -X POST ${window.location.origin}/ask -H "X-API-Key: cf_live_…" -H "Content-Type: application/json" -d '{"question":"What is the contract value?"}'`,
+                },
+                {
+                  method: "POST", path: "/upload", color: "text-blue-400 bg-blue-400/10",
+                  desc: "Upload a document (PDF, DOCX, TXT, CSV…) — ingested into your private tenant",
+                  curl: `curl -X POST ${window.location.origin}/upload -H "X-API-Key: cf_live_…" -F "file=@document.pdf"`,
+                },
+                {
+                  method: "GET", path: "/chat/history", color: "text-emerald-400 bg-emerald-400/10",
+                  desc: "Get your recent chat history",
+                  curl: `curl ${window.location.origin}/chat/history -H "X-API-Key: cf_live_…"`,
+                },
+              ].map(({ method, path, color, desc, curl }) => (
+                <div key={path} className="bg-gray-900 rounded-lg p-3 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded ${color}`}>{method}</span>
+                    <code className="text-sm text-white font-mono">{path}</code>
+                    <span className="text-xs text-gray-400 ml-1">{desc}</span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-gray-800 rounded px-2 py-1.5">
+                    <code className="flex-1 text-xs text-gray-400 font-mono truncate">{curl}</code>
+                    <button onClick={() => navigator.clipboard.writeText(curl)}
+                      className="text-gray-600 hover:text-gray-300 transition shrink-0" title="Copy">
+                      <Copy size={11} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Usage Analytics per key */}
+            {apiKeys.length > 0 && (
+              <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+                <p className="text-sm font-semibold text-white flex items-center gap-2">
+                  <BarChart3 size={14} className="text-brand-400" /> Usage Analytics
+                </p>
+                <div className="space-y-2">
+                  {apiKeys.filter(k => k.is_active).map(k => {
+                    const maxReqs = Math.max(...apiKeys.map(x => x.total_requests || 0), 1);
+                    const pct = Math.max(((k.total_requests || 0) / maxReqs) * 100, 2);
+                    return (
+                      <div key={k.id} className="space-y-1">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-gray-300 font-medium truncate max-w-[180px]">{k.name}</span>
+                          <span className="text-gray-400 shrink-0 ml-2">{k.total_requests ?? 0} req</span>
+                        </div>
+                        <div className="bg-gray-700 rounded-full h-1.5">
+                          <div className="bg-brand-500 h-1.5 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                        </div>
+                        <p className="text-xs text-gray-600">
+                          Last used: {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "Never"} &bull; Permissions: {k.permissions}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

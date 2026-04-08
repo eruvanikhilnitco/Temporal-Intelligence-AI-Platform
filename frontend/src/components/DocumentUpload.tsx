@@ -195,41 +195,59 @@ function IngestQueueStatus() {
   );
 }
 
-// ── SharePoint Connector ───────────────────────────────────────────────────────
+// ── SharePoint Connector (Microsoft Graph API) ────────────────────────────────
 function SharePointConnector() {
-  const [form, setForm] = useState({ site_url: "", username: "", password: "", library_path: "Shared Documents" });
+  const [siteUrl, setSiteUrl] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [siteDisplayName, setSiteDisplayName] = useState("");
+  const [libraries, setLibraries] = useState<{ id: string; name: string }[]>([]);
+  const [selectedLibrary, setSelectedLibrary] = useState("Shared Documents");
+  const [folderPath, setFolderPath] = useState("");
+  const [recursive, setRecursive] = useState(true);
+  const [fileTypes, setFileTypes] = useState("");
+  const [testing, setTesting] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
-  const [log, setLog] = useState<string[]>([]);
 
-  const field = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm(p => ({ ...p, [k]: e.target.value }));
+  const authHeaders = () => {
+    const token = localStorage.getItem("accessToken");
+    return { Authorization: `Bearer ${token}` };
+  };
 
-  async function connect() {
-    if (!form.site_url || !form.username || !form.password) {
-      setError("Site URL, username and password are required.");
-      return;
-    }
-    setError("");
-    setResult(null);
-    setLog([]);
-    setRunning(true);
-    setLog(["Connecting to SharePoint…"]);
-
+  async function testConnection() {
+    if (!siteUrl.trim()) { setError("Site URL is required."); return; }
+    setError(""); setConnected(false); setLibraries([]); setTesting(true);
     try {
-      const token = localStorage.getItem("accessToken");
-      setLog(prev => [...prev, `Authenticating as ${form.username}…`]);
-      setLog(prev => [...prev, `Traversing library: ${form.library_path} (recursive)…`]);
+      const res = await axios.post("/admin/sharepoint/test",
+        { site_url: siteUrl, library_name: selectedLibrary },
+        { headers: authHeaders() }
+      );
+      setSiteDisplayName(res.data.site_display_name || siteUrl);
+      const libs = res.data.libraries || [];
+      setLibraries(libs);
+      if (libs.length > 0) setSelectedLibrary(libs[0].name);
+      setConnected(true);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || "Connection failed. Check Site URL and server .env credentials.");
+    } finally {
+      setTesting(false);
+    }
+  }
 
-      const res = await axios.post("/admin/sharepoint/ingest", form, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      setLog(prev => [...prev, `Ingestion complete.`]);
+  async function ingest() {
+    setError(""); setResult(null); setRunning(true);
+    try {
+      const res = await axios.post("/admin/sharepoint/ingest", {
+        site_url: siteUrl,
+        library_name: selectedLibrary,
+        folder_path: folderPath,
+        recursive,
+        file_types: fileTypes.split(",").map(s => s.trim()).filter(Boolean),
+      }, { headers: authHeaders() });
       setResult(res.data);
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Connection failed. Check credentials and site URL.");
+      setError(err.response?.data?.detail || "Ingestion failed.");
     } finally {
       setRunning(false);
     }
@@ -240,70 +258,80 @@ function SharePointConnector() {
       <div>
         <h2 className="text-lg font-bold text-white">SharePoint Connector</h2>
         <p className="text-sm text-gray-400 mt-1">
-          Connect to your SharePoint site and recursively ingest all documents from a library — including nested folders at any depth.
+          Connect via Microsoft Graph API — credentials are configured server-side in <code className="text-brand-300 bg-gray-900 px-1 rounded">.env</code>. No password needed here.
         </p>
       </div>
 
-      {/* Connection form */}
+      {/* Step 1 — Site URL + Test Connection */}
       <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4">
-        <div className="flex items-center gap-2 mb-1">
-          <Cloud size={16} className="text-brand-400" />
-          <p className="text-sm font-semibold text-white">SharePoint Connection</p>
+        <p className="text-sm font-semibold text-white flex items-center gap-2">
+          <Cloud size={15} className="text-brand-400" /> Step 1 — Connect to Site
+        </p>
+        <div>
+          <label className="block text-xs font-medium text-gray-400 mb-1">SharePoint Site URL</label>
+          <input value={siteUrl} onChange={e => { setSiteUrl(e.target.value); setConnected(false); }}
+            placeholder="https://yourcompany.sharepoint.com/sites/YourSite"
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
         </div>
-
-        <div className="grid gap-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">SharePoint Site URL</label>
-            <input value={form.site_url} onChange={field("site_url")}
-              placeholder="https://yourcompany.sharepoint.com/sites/YourSite"
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">Username / Email</label>
-              <input value={form.username} onChange={field("username")}
-                placeholder="user@company.com"
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">Password</label>
-              <input type="password" value={form.password} onChange={field("password")}
-                placeholder="••••••••"
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">Document Library Path</label>
-            <input value={form.library_path} onChange={field("library_path")}
-              placeholder="Shared Documents"
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
-            <p className="text-xs text-gray-500 mt-1">e.g. "Shared Documents" or "Shared Documents/Contracts/2024"</p>
-          </div>
-        </div>
-
         {error && (
           <div className="flex gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
             <AlertCircle size={15} className="shrink-0 mt-0.5" /> {error}
           </div>
         )}
-
-        <button onClick={connect} disabled={running}
-          className="w-full flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg transition text-sm">
-          {running ? <><Loader2 size={15} className="animate-spin" /> Ingesting…</> : <><Play size={15} /> Connect & Ingest All Files</>}
+        {connected && (
+          <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-sm text-emerald-300">
+            <CheckCircle size={15} className="shrink-0" /> Connected to <strong>{siteDisplayName}</strong>
+          </div>
+        )}
+        <button onClick={testConnection} disabled={testing}
+          className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm rounded-lg transition">
+          {testing ? <><Loader2 size={13} className="animate-spin" /> Testing…</> : <><Play size={13} /> Test Connection</>}
         </button>
       </div>
 
-      {/* Live log */}
-      {log.length > 0 && (
-        <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
-          <p className="text-xs font-medium text-gray-400 mb-2 flex items-center gap-1.5">
-            <RefreshCw size={11} className={running ? "animate-spin text-brand-400" : "text-gray-500"} /> Ingestion Log
+      {/* Step 2 — Library + folder config (shown after connect) */}
+      {connected && (
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4">
+          <p className="text-sm font-semibold text-white flex items-center gap-2">
+            <FolderOpen size={15} className="text-brand-400" /> Step 2 — Select Library &amp; Options
           </p>
-          <div className="space-y-1">
-            {log.map((l, i) => (
-              <p key={i} className="text-xs text-gray-300 font-mono">› {l}</p>
-            ))}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Document Library</label>
+              {libraries.length > 0 ? (
+                <select value={selectedLibrary} onChange={e => setSelectedLibrary(e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+                  {libraries.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}
+                </select>
+              ) : (
+                <input value={selectedLibrary} onChange={e => setSelectedLibrary(e.target.value)}
+                  placeholder="Shared Documents"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500" />
+              )}
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Sub-folder (optional)</label>
+              <input value={folderPath} onChange={e => setFolderPath(e.target.value)}
+                placeholder="Contracts/2024"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">File Types (comma-separated, empty = all)</label>
+              <input value={fileTypes} onChange={e => setFileTypes(e.target.value)}
+                placeholder="pdf, docx, txt"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500" />
+            </div>
+            <div className="flex items-center gap-3 pt-5">
+              <input type="checkbox" id="sp-recursive" checked={recursive}
+                onChange={e => setRecursive(e.target.checked)}
+                className="w-4 h-4 accent-brand-500" />
+              <label htmlFor="sp-recursive" className="text-sm text-gray-300 cursor-pointer">Traverse sub-folders recursively</label>
+            </div>
           </div>
+          <button onClick={ingest} disabled={running}
+            className="w-full flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg transition text-sm">
+            {running ? <><Loader2 size={15} className="animate-spin" /> Ingesting…</> : <><Play size={15} /> Connect &amp; Ingest Files</>}
+          </button>
         </div>
       )}
 
@@ -316,7 +344,7 @@ function SharePointConnector() {
               : <AlertCircle size={16} className="text-yellow-400" />}
             <p className="text-sm font-semibold text-white">Ingestion Complete</p>
           </div>
-          <div className="grid grid-cols-2 gap-3 mb-3 text-sm">
+          <div className="grid grid-cols-2 gap-3 mb-3">
             <div className="bg-gray-800 rounded-lg px-3 py-2 text-center">
               <p className="text-2xl font-bold text-emerald-400">{result.ingested}</p>
               <p className="text-xs text-gray-400">Files Ingested</p>
@@ -340,28 +368,22 @@ function SharePointConnector() {
             <div className="mt-3 space-y-1">
               <p className="text-xs font-medium text-red-400">Errors:</p>
               {result.error_details.map((e: any, i: number) => (
-                <div key={i} className="text-xs text-gray-400">
-                  <span className="text-red-400">✗</span> {e.file}: {e.error}
-                </div>
+                <div key={i} className="text-xs text-gray-400">✗ {e.file}: {e.error}</div>
               ))}
             </div>
           )}
         </div>
       )}
 
-      {/* Recursive traversal info */}
+      {/* Info box */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
-        <p className="text-xs font-medium text-gray-300 mb-3 flex items-center gap-1.5">
-          <FolderOpen size={13} className="text-brand-400" /> Recursive Traversal — How It Works
-        </p>
+        <p className="text-xs font-medium text-gray-300 mb-2">How authentication works</p>
         <div className="space-y-1.5 text-xs text-gray-400">
           {[
-            "Authenticates with SharePoint using your credentials",
-            "Lists all files in the root library folder",
-            "Recursively traverses every subfolder at any depth",
-            "Downloads each file and runs it through the ingestion pipeline",
-            "Embeds chunks into Qdrant vector store",
-            "Extracts entities and builds knowledge graph (SQLite / Neo4j)",
+            "Azure AD app registration authenticates using client_credentials (no user login)",
+            "SHAREPOINT_TENANT_ID, CLIENT_ID, CLIENT_SECRET are set in server .env",
+            "The app needs Sites.Read.All and Files.Read.All Graph API permissions",
+            "Files are downloaded, chunked, embedded in Qdrant and linked in the knowledge graph",
           ].map((s, i) => (
             <div key={i} className="flex items-start gap-2">
               <span className="text-brand-400 font-bold shrink-0">{i + 1}.</span> {s}

@@ -74,16 +74,21 @@ async def get_current_user(
     if x_api_key:
         from app.db import SessionLocal
         from services.api_key_service import authenticate_api_key
+        import logging as _log
+        _logger = _log.getLogger(__name__)
         db = SessionLocal()
         try:
             user = authenticate_api_key(db, x_api_key)
+        except Exception as _e:
+            _logger.error("[Auth] API key lookup error: %s", _e)
+            user = None
         finally:
             db.close()
         if user:
             return user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired API key",
+            detail="Invalid or expired API key. Ensure the key is active and was not revoked.",
             headers={"WWW-Authenticate": "X-API-Key"},
         )
 
