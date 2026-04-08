@@ -1,46 +1,105 @@
 import { useState, useEffect } from "react";
-import { TrendingUp, Zap, Brain, Database, GitBranch, BarChart3, RefreshCw, Users, AlertCircle } from "lucide-react";
+import { TrendingUp, Zap, Brain, Database, GitBranch, BarChart3, RefreshCw, Users, AlertCircle, Activity } from "lucide-react";
 import axios from "axios";
 
-function MiniLineChart({ data, color }: { data: number[]; color: string }) {
+// ── Latency formatter ─────────────────────────────────────────────────────────
+function fmtLatency(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
+// ── Area line chart ───────────────────────────────────────────────────────────
+function AreaChart({ data, color }: { data: number[]; color: string }) {
   const max = Math.max(...data, 1);
   const min = Math.min(...data);
-  const h = 60; const w = 300;
+  const h = 64; const w = 400;
   const pts = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * w;
-    const y = h - ((v - min) / (max - min || 1)) * h;
+    const x = (i / Math.max(data.length - 1, 1)) * w;
+    const y = h - ((v - min) / (max - min || 1)) * (h - 8) - 4;
     return `${x},${y}`;
   }).join(" ");
+  const gradId = `ag${color.replace(/[^a-z0-9]/gi, "")}`;
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-14" preserveAspectRatio="none">
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-16" preserveAspectRatio="none">
       <defs>
-        <linearGradient id={`g-${color.replace("#", "")}`} x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.3" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      <polygon points={`0,${h} ${pts} ${w},${h}`} fill={`url(#g-${color.replace("#", "")})`} />
+      <polygon points={`0,${h} ${pts} ${w},${h}`} fill={`url(#${gradId})`} />
       <polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function BarChart({ data, color }: { data: number[]; color: string }) {
+// ── Sparkline mini bars ───────────────────────────────────────────────────────
+function SparkBars({ data, color }: { data: number[]; color: string }) {
   const max = Math.max(...data, 1);
   return (
-    <div className="flex items-end gap-0.5 h-20">
+    <div style={{ display: "flex", alignItems: "flex-end", gap: "1px", height: "36px", width: "100%" }}>
       {data.map((v, i) => (
-        <div key={i} className="flex-1 rounded-t transition-all hover:opacity-80"
-          style={{ height: `${(v / max) * 100}%`, background: color, minHeight: "2px" }} />
+        <div
+          key={i}
+          style={{
+            flex: 1,
+            height: `${Math.max(8, (v / max) * 100)}%`,
+            background: color,
+            opacity: 0.5 + (i / data.length) * 0.5,
+            borderRadius: "2px",
+          }}
+        />
       ))}
     </div>
   );
 }
 
+// ── Cache ring gauge ──────────────────────────────────────────────────────────
+function RingGauge({ value, color }: { value: number; color: string }) {
+  const r = 40;
+  const circ = 2 * Math.PI * r;
+  const dash = Math.min(value / 100, 1) * circ;
+  return (
+    <div style={{ position: "relative", width: 100, height: 100, flexShrink: 0 }}>
+      <svg width="100" height="100" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0 }}>
+        <circle cx="50" cy="50" r={r} fill="none" stroke="#1f2937" strokeWidth="8" />
+        <circle
+          cx="50" cy="50" r={r}
+          fill="none" stroke={color} strokeWidth="8"
+          strokeDasharray={`${dash} ${circ}`}
+          strokeLinecap="round"
+          transform="rotate(-90 50 50)"
+        />
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <span style={{ fontSize: 20, fontWeight: 700, color: "white", lineHeight: 1 }}>{value.toFixed(0)}%</span>
+        <span style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>hit rate</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Stat card ─────────────────────────────────────────────────────────────────
+function StatCard({ label, value, icon: Icon, colorClass, borderClass, fromClass, note }: any) {
+  return (
+    <div className={`rounded-2xl border p-5 bg-gradient-to-br ${fromClass} to-gray-800/80 ${borderClass}`}>
+      <div className="flex items-start justify-between mb-3">
+        <div className={`w-9 h-9 rounded-xl flex items-center justify-center bg-gray-800`}>
+          <Icon size={16} className={colorClass} />
+        </div>
+        {note && <span className={`text-xs px-2 py-0.5 rounded-full bg-gray-800 ${colorClass}`}>{note}</span>}
+      </div>
+      <p className="text-3xl font-bold text-white leading-none mb-1">{value}</p>
+      <p className="text-xs text-gray-400">{label}</p>
+    </div>
+  );
+}
+
 const PHASES = [
-  { icon: Database, label: "Phase 1: RAG", desc: "Vector retrieval", latency: "80ms", color: "text-blue-400" },
-  { icon: Brain, label: "Phase 2: Intelligence", desc: "Classifier + Reranker + Cache", latency: "120ms", color: "text-violet-400" },
-  { icon: GitBranch, label: "Phase 3: Graph RAG", desc: "Hybrid + Knowledge Graph", latency: "160ms", color: "text-emerald-400" },
+  { icon: Database,  label: "Phase 1",  name: "Vector RAG",            latency: "~80ms",  color: "#6366f1", tc: "text-indigo-400" },
+  { icon: Brain,     label: "Phase 2",  name: "Classifier + Reranker", latency: "~120ms", color: "#8b5cf6", tc: "text-violet-400" },
+  { icon: GitBranch, label: "Phase 3",  name: "Graph RAG + Cache",     latency: "~160ms", color: "#10b981", tc: "text-emerald-400" },
 ];
 
 export default function AnalyticsDashboard() {
@@ -56,38 +115,31 @@ export default function AnalyticsDashboard() {
     try {
       const token = localStorage.getItem("accessToken");
       if (!token) { setFetchError("Not authenticated."); setLoading(false); return; }
-      const res = await axios.get("/admin/analytics", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await axios.get("/admin/analytics", { headers: { Authorization: `Bearer ${token}` } });
       setData(res.data);
     } catch (e: any) {
-      setFetchError(e?.response?.data?.detail || "Failed to load analytics. Backend may be unavailable.");
+      setFetchError(e?.response?.data?.detail || "Failed to load analytics.");
       setData(null);
     } finally {
       setLoading(false);
     }
   }
 
-  const daily = data?.daily_queries ?? [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-  const hourly = data?.hourly_queries ?? new Array(24).fill(0);
-  const cacheData = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, data?.cache_hit_rate ?? 0];
-
-  const kpi = [
-    { label: "Total Queries", value: (data?.total_queries ?? 0).toLocaleString(), icon: BarChart3 },
-    { label: "Avg Latency", value: data?.avg_latency_ms != null ? `${Number(data.avg_latency_ms).toFixed(0)}ms` : "—", icon: Zap },
-    { label: "Cache Hit Rate", value: data?.cache_hit_rate != null ? `${Number(data.cache_hit_rate).toFixed(1)}%` : "—", icon: Database },
-    { label: "Graph Usage", value: data?.graph_usage_rate != null ? `${Number(data.graph_usage_rate).toFixed(1)}%` : "—", icon: GitBranch },
-    { label: "Avg Confidence", value: data?.avg_confidence != null ? `${Number(data.avg_confidence).toFixed(1)}%` : "—", icon: TrendingUp },
-    { label: "Total Users", value: String(data?.total_users ?? 0), icon: Users },
-  ];
+  const daily     = data?.daily_queries  ?? new Array(14).fill(0);
+  const hourly    = data?.hourly_queries ?? new Array(24).fill(0);
+  const cacheRate  = Number(data?.cache_hit_rate  ?? 0);
+  const graphRate  = Number(data?.graph_usage_rate ?? 0);
+  const confidence = Number(data?.avg_confidence   ?? 0);
 
   const retrieval = data?.retrieval_quality ?? [
-    { type: "Fact lookup", score: 0, queries: 0 },
-    { type: "Summary", score: 0, queries: 0 },
-    { type: "Multi-hop", score: 0, queries: 0 },
-    { type: "Analytical", score: 0, queries: 0 },
-    { type: "Comparison", score: 0, queries: 0 },
+    { type: "Fact lookup",  score: 0, queries: 0 },
+    { type: "Summary",      score: 0, queries: 0 },
+    { type: "Multi-hop",    score: 0, queries: 0 },
+    { type: "Analytical",   score: 0, queries: 0 },
+    { type: "Comparison",   score: 0, queries: 0 },
   ];
+
+  const hourlyMax = Math.max(...hourly, 1);
 
   return (
     <div className="h-full overflow-y-auto p-6 space-y-6">
@@ -95,25 +147,26 @@ export default function AnalyticsDashboard() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold text-white">Analytics Dashboard</h2>
-          <p className="text-sm text-gray-400 mt-1">System performance, retrieval quality, and user engagement</p>
+          <h2 className="text-xl font-bold text-white flex items-center gap-2">
+            <Activity size={20} className="text-brand-400" />
+            Analytics Dashboard
+          </h2>
+          <p className="text-sm text-gray-400 mt-1">Live system performance, retrieval quality and usage</p>
         </div>
         <button onClick={fetchAnalytics} disabled={loading}
-          className="flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition text-xs disabled:opacity-50">
-          <RefreshCw size={14} className={loading ? "animate-spin text-brand-400" : ""} />
+          className="flex items-center gap-2 px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg text-xs text-gray-400 hover:text-white transition disabled:opacity-50">
+          <RefreshCw size={13} className={loading ? "animate-spin text-brand-400" : ""} />
           {loading ? "Loading…" : "Refresh"}
         </button>
       </div>
 
-      {/* Loading */}
       {loading && (
-        <div className="flex items-center justify-center h-40 gap-3 text-gray-400">
-          <RefreshCw size={20} className="animate-spin text-brand-400" />
-          <span className="text-sm">Loading analytics data…</span>
+        <div className="flex items-center justify-center h-48 gap-3 text-gray-400">
+          <RefreshCw size={22} className="animate-spin text-brand-400" />
+          <span className="text-sm">Loading analytics…</span>
         </div>
       )}
 
-      {/* Error */}
       {!loading && fetchError && (
         <div className="flex gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">
           <AlertCircle size={16} className="shrink-0 mt-0.5" />
@@ -125,83 +178,200 @@ export default function AnalyticsDashboard() {
         </div>
       )}
 
-      {/* Content */}
       {!loading && !fetchError && (
         <>
-          {/* KPI cards */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            {kpi.map(({ label, value, icon: Icon }) => (
-              <div key={label} className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-                <Icon size={16} className="text-brand-400 mb-2" />
-                <p className="text-xs text-gray-400 mb-1 leading-tight">{label}</p>
-                <p className="text-xl font-bold text-white">{value}</p>
+          {/* ── Row 1: 4 KPI cards ── */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+
+            {/* Total Queries with sparkline */}
+            <div className="rounded-2xl border border-brand-500/20 p-5 bg-gradient-to-br from-brand-900/40 to-gray-800/80 col-span-2 lg:col-span-1">
+              <div className="flex items-start justify-between mb-3">
+                <div className="w-9 h-9 rounded-xl bg-gray-800 flex items-center justify-center">
+                  <BarChart3 size={16} className="text-brand-400" />
+                </div>
+                <span className="text-xs text-brand-400 bg-gray-800 px-2 py-0.5 rounded-full">all time</span>
+              </div>
+              <p className="text-3xl font-bold text-white leading-none mb-1">
+                {(data?.total_queries ?? 0).toLocaleString()}
+              </p>
+              <p className="text-xs text-gray-400 mb-3">Total Queries</p>
+              <SparkBars data={daily} color="#6366f1" />
+              <p className="text-xs text-gray-600 mt-1">Last 14 days</p>
+            </div>
+
+            {/* Avg Latency */}
+            <StatCard
+              label="Avg Response Time"
+              value={fmtLatency(data?.avg_latency_ms)}
+              icon={Zap}
+              colorClass="text-amber-400"
+              borderClass="border-amber-500/20"
+              fromClass="from-amber-900/20"
+              note="avg"
+            />
+
+            {/* Cache Hit Rate — centered ring */}
+            <div className="rounded-2xl border border-emerald-500/20 p-5 bg-gradient-to-br from-emerald-900/20 to-gray-800/80 flex flex-col items-center justify-center gap-2">
+              <RingGauge value={cacheRate} color="#10b981" />
+              <p className="text-xs font-semibold text-white">Cache Hit Rate</p>
+              <p className={`text-xs font-medium ${cacheRate >= 20 ? "text-emerald-400" : cacheRate > 0 ? "text-yellow-400" : "text-gray-500"}`}>
+                {cacheRate >= 20 ? "● Excellent" : cacheRate > 0 ? "◐ Building" : "○ Warming up"}
+              </p>
+            </div>
+
+            {/* Users + graph/confidence mini bars */}
+            <div className="rounded-2xl border border-violet-500/20 p-5 bg-gradient-to-br from-violet-900/20 to-gray-800/80">
+              <div className="flex items-start justify-between mb-3">
+                <div className="w-9 h-9 rounded-xl bg-gray-800 flex items-center justify-center">
+                  <Users size={16} className="text-violet-400" />
+                </div>
+              </div>
+              <p className="text-3xl font-bold text-white leading-none mb-1">{data?.total_users ?? 0}</p>
+              <p className="text-xs text-gray-400 mb-4">Total Users</p>
+              <div className="space-y-2.5">
+                {[
+                  { label: "Graph Usage", val: graphRate, color: "bg-violet-500" },
+                  { label: "Avg Confidence", val: confidence, color: "bg-blue-500" },
+                ].map(({ label, val, color }) => (
+                  <div key={label}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-gray-500">{label}</span>
+                      <span className="text-gray-300 font-medium">{val.toFixed(1)}%</span>
+                    </div>
+                    <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${color} transition-all duration-700`} style={{ width: `${val}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Row 2: Daily queries area chart ── */}
+          <div className="bg-gray-800 border border-gray-700 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Queries per Day</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Volume trend — last 14 days</p>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-brand-400">
+                <span className="w-2 h-2 rounded-full bg-brand-400 inline-block" />
+                Daily volume
+              </div>
+            </div>
+            <AreaChart data={daily} color="#6366f1" />
+            <div className="flex justify-between mt-2 text-xs text-gray-600">
+              <span>14 days ago</span><span>Today</span>
+            </div>
+          </div>
+
+          {/* ── Row 3: Hourly distribution (simple bars) ── */}
+          <div className="bg-gray-800 border border-gray-700 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Hourly Query Distribution</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Queries per hour — today</p>
+              </div>
+              <span className="text-xs text-gray-500">
+                Peak: {hourly.indexOf(Math.max(...hourly))}:00
+              </span>
+            </div>
+            {/* Simple flex bar chart — no nested flex, just direct divs */}
+            <div className="relative" style={{ height: 96 }}>
+              <div className="absolute inset-0 flex items-end gap-px">
+                {hourly.map((v: number, i: number) => {
+                  const isPeak = v === Math.max(...hourly) && v > 0;
+                  const h = Math.max(3, Math.round((v / hourlyMax) * 100));
+                  return (
+                    <div
+                      key={i}
+                      className="group flex-1 relative"
+                      style={{ height: "100%", display: "flex", alignItems: "flex-end" }}
+                      title={`${String(i).padStart(2, "0")}:00 — ${v} queries`}
+                    >
+                      <div
+                        className={`w-full rounded-sm transition-colors ${isPeak ? "bg-brand-400" : "bg-brand-600/50 group-hover:bg-brand-500/70"}`}
+                        style={{ height: `${h}%` }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex justify-between mt-2 text-xs text-gray-600">
+              <span>00h</span><span>06h</span><span>12h</span><span>18h</span><span>23h</span>
+            </div>
+          </div>
+
+          {/* ── Row 4: Retrieval quality ── */}
+          <div className="bg-gray-800 border border-gray-700 rounded-2xl p-6">
+            <h3 className="text-sm font-semibold text-white mb-5">Retrieval Quality by Query Type</h3>
+            <div className="space-y-4">
+              {retrieval.map(({ type, score, queries }: any) => {
+                const pct = Number(score) || 0;
+                const barColor = pct >= 80 ? "#10b981" : pct >= 60 ? "#6366f1" : pct >= 40 ? "#f59e0b" : "#6b7280";
+                const label = pct >= 80 ? "Excellent" : pct >= 60 ? "Good" : pct >= 40 ? "Fair" : "Low";
+                return (
+                  <div key={type}>
+                    <div className="flex items-center justify-between text-xs mb-1.5">
+                      <span className="text-gray-200 font-medium">{type}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-gray-500">{queries} q/day</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full border" style={{ color: barColor, borderColor: barColor + "44", background: barColor + "11" }}>
+                          {label}
+                        </span>
+                        <span className="font-bold w-8 text-right" style={{ color: barColor }}>{pct}%</span>
+                      </div>
+                    </div>
+                    <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: barColor }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Row 5: RAG pipeline ── */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {PHASES.map(({ icon: Icon, label, name, latency, color, tc }) => (
+              <div key={label} className="bg-gray-800 border border-gray-700 rounded-2xl p-5">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: color + "22" }}>
+                    <Icon size={16} style={{ color }} />
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500">{label}</p>
+                    <p className="text-sm font-bold text-white">{name}</p>
+                  </div>
+                </div>
+                <div className="space-y-1.5 text-xs border-t border-gray-700 pt-3">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Status</span>
+                    <span className="text-emerald-400 font-medium">● Active</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Added latency</span>
+                    <span className={`${tc} font-medium`}>{latency}</span>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
 
-          {/* Line charts */}
-          <div className="grid md:grid-cols-2 gap-5">
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-1">Queries per Day (Last 14 days)</h3>
-              <p className="text-xs text-gray-500 mb-3">Daily query volume trend</p>
-              <MiniLineChart data={daily} color="#6366f1" />
-              <div className="flex justify-between mt-2 text-xs text-gray-600">
-                <span>Day 1</span><span>Day 14</span>
-              </div>
-            </div>
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-              <h3 className="text-sm font-semibold text-white mb-1">Cache Hit Rate (%)</h3>
-              <p className="text-xs text-gray-500 mb-3">Semantic cache effectiveness over time</p>
-              <MiniLineChart data={cacheData} color="#10b981" />
-              <div className="flex justify-between mt-2 text-xs text-gray-600">
-                <span>Day 1</span><span>Today</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Hourly bar chart */}
-          <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-white mb-1">Hourly Query Distribution</h3>
-            <p className="text-xs text-gray-500 mb-4">Queries per hour across today</p>
-            <BarChart data={hourly} color="#6366f1" />
-            <div className="flex justify-between mt-2 text-xs text-gray-600">
-              <span>00:00</span><span>12:00</span><span>23:59</span>
-            </div>
-          </div>
-
-          {/* Retrieval quality */}
-          <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-white mb-4">Retrieval Quality by Query Type</h3>
-            <div className="space-y-3">
-              {retrieval.map(({ type, score, queries }: any) => (
-                <div key={type} className="flex items-center gap-3">
-                  <span className="text-sm text-gray-300 w-28 shrink-0">{type}</span>
-                  <div className="flex-1 bg-gray-700 rounded-full h-2">
-                    <div className="h-2 rounded-full bg-gradient-to-r from-brand-600 to-violet-500 transition-all" style={{ width: `${score}%` }} />
-                  </div>
-                  <span className="text-xs text-brand-300 font-bold w-10 text-right">{score}%</span>
-                  <span className="text-xs text-gray-500 w-14 text-right">{queries} q/day</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Phase performance */}
-          <div className="grid md:grid-cols-3 gap-5">
-            {PHASES.map(({ icon: Icon, label, desc, latency, color }) => (
-              <div key={label} className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-                <Icon size={20} className={`${color} mb-3`} />
-                <p className="text-xs text-gray-400 mb-0.5">{label}</p>
-                <p className="text-sm font-bold text-white mb-3">{desc}</p>
-                <div className="space-y-1 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Status</span>
-                    <span className="text-emerald-400">● Active</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">Added latency</span>
-                    <span className={color}>{latency}</span>
-                  </div>
+          {/* ── Row 6: Quick metrics ── */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {[
+              { label: "Graph Usage Rate",  value: `${graphRate.toFixed(1)}%`,  icon: GitBranch, tc: "text-violet-400" },
+              { label: "Avg Confidence",    value: `${confidence.toFixed(1)}%`, icon: TrendingUp, tc: "text-blue-400"   },
+              { label: "Cache Hit Rate",    value: `${cacheRate.toFixed(1)}%`,  icon: Database,  tc: "text-emerald-400" },
+              { label: "Avg Latency",       value: fmtLatency(data?.avg_latency_ms), icon: Zap, tc: "text-amber-400" },
+            ].map(({ label, value, icon: Icon, tc }) => (
+              <div key={label} className="bg-gray-800 border border-gray-700 rounded-xl p-4 flex items-center gap-3">
+                <Icon size={16} className={tc} />
+                <div>
+                  <p className="text-xs text-gray-500">{label}</p>
+                  <p className="text-lg font-bold text-white">{value}</p>
                 </div>
               </div>
             ))}

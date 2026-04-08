@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [5.1.0] — 2026-04-08
+
+### Changed
+- `frontend/src/components/Analytics.tsx` — fixed ring gauge card layout (was overflowing narrow card); ring gauge is now centered vertically in its own card; fixed hourly bar chart (removed broken nested `flex flex-col items-center` that caused bars to collapse to 0 width); simplified to direct `div` bars with `alignItems: flex-end`; added bottom row of 4 quick-metric tiles; latency still formats as `12.3s` for >1000ms
+- `frontend/src/components/KnowledgeGraphUI.tsx` — complete 3D interactive graph: canvas-based 3D force-directed layout (golden-angle sphere initialization → 80 iteration settle); real-time perspective projection with trackball rotation (drag to rotate X/Y axes); auto-rotates slowly when idle; double-click to toggle auto-rotate; hover shows glow + edge labels + tooltip; click selects node and highlights connected edges in the relationship table; entity browser on left; toggle between "3D Graph" and "Table" views in right panel
+
+### Fixed
+- API key 401 in Postman: root cause was using port 5173 (Vite dev server) instead of port 8000 (FastAPI backend). Correct backend URL: `https://potential-guacamole-q7wpxvpq6xj73656p-8000.app.github.dev`
+- Generated fresh working API key: `cf_live_718c75991f5b3dd5ca786f6b22f3785b45be20f4` (name: postman-api)
+
+---
+
+## [5.0.0] — 2026-04-08
+
+### Changed
+- `frontend/src/components/ChatInterface.tsx` — grounding warning redesigned from prominent yellow banner to subtle italic footnote with left border (ChatGPT-style)
+- `frontend/src/components/Analytics.tsx` — complete dashboard overhaul: fixed fake cacheData bug (was `[0,0,...,data.cache_hit_rate]`); replaced flat cache chart with animated ring gauge showing real hit rate; added gradient KPI hero cards with sparkline bars; proper latency formatting (ms → s when > 1000ms); color-coded retrieval quality bars; hover tooltips on hourly chart
+- `frontend/src/components/AdminPanel.tsx` — Neo4j/service-down warning redesigned from verbose yellow banner with raw error text into compact inline pill showing "using SQLite fallback" with subtle pulse dot
+- `frontend/src/components/KnowledgeGraphUI.tsx` — complete redesign: replaced unreadable force-directed SVG graph (69 overlapping nodes) with split-panel entity browser + relationship table; left panel groups entities by type in collapsible sections; right panel shows searchable/filterable relationship table with From→Relation→To columns and type badges; real-time filtering by entity selection or search query
+
+---
+
 ## [4.9.0] — 2026-04-08
 
 ### Fixed

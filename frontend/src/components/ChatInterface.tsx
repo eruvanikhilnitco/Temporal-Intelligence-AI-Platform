@@ -218,12 +218,11 @@ function MessageBubble({
               {/* Sources */}
               {msg.sources && <SourcesPanel sources={msg.sources} />}
 
-              {/* Grounding warning */}
+              {/* Grounding warning — subtle footnote */}
               {msg.groundingWarning && (
-                <div className="mt-2 flex items-start gap-2 rounded-md border border-yellow-600/50 bg-yellow-900/20 px-3 py-2 text-xs text-yellow-300">
-                  <span className="mt-0.5 shrink-0">⚠️</span>
-                  <span>{msg.groundingWarning}</span>
-                </div>
+                <p className="mt-2 pl-3 border-l-2 border-gray-700 text-xs text-gray-500 italic leading-relaxed">
+                  {msg.groundingWarning}
+                </p>
               )}
 
               {/* Action row */}

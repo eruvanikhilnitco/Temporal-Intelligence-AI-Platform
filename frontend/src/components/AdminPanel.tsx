@@ -30,23 +30,36 @@ const RISK_STYLE: Record<string, string> = {
 
 // ── System status card ────────────────────────────────────────────────────────
 function SystemCard({ icon: Icon, label, value, status, color, extra }: any) {
-  const dot = status === "online" ? "bg-emerald-400"
-    : status === "warn" ? "bg-yellow-400 animate-pulse"
-    : "bg-red-400";
-  const txt = status === "online" ? "text-emerald-400"
-    : status === "warn" ? "text-yellow-400"
-    : "text-red-400";
-  const label2 = status === "online" ? "● Operational" : status === "warn" ? "⚠ Warning" : "✕ Offline";
+  const isOnline  = status === "online";
+  const isWarn    = status === "warn";
+  const isOffline = !isOnline && !isWarn;
+
+  const borderGlow = isOnline  ? "border-emerald-500/30 shadow-emerald-500/5"
+    : isWarn   ? "border-yellow-500/30 shadow-yellow-500/5"
+    : "border-red-500/30 shadow-red-500/5";
+  const gradFrom  = isOnline  ? "from-emerald-900/20"
+    : isWarn   ? "from-yellow-900/20"
+    : "from-red-900/20";
+  const dotClass  = isOnline  ? "bg-emerald-400"
+    : isWarn   ? "bg-yellow-400 animate-pulse"
+    : "bg-red-400 animate-pulse";
+  const statusTxt = isOnline  ? "Operational" : isWarn ? "Degraded" : "Offline";
+  const statusColor = isOnline ? "text-emerald-400" : isWarn ? "text-yellow-400" : "text-red-400";
+
   return (
-    <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-      <div className="flex items-start justify-between mb-3">
-        <Icon size={20} className={color} />
-        <span className={`w-2 h-2 rounded-full ${dot}`} />
+    <div className={`rounded-2xl border bg-gradient-to-br ${gradFrom} to-gray-800/80 ${borderGlow} shadow-lg p-5 transition-all hover:scale-[1.01]`}>
+      <div className="flex items-start justify-between mb-4">
+        <div className="w-10 h-10 rounded-xl bg-gray-800/80 flex items-center justify-center shadow-inner">
+          <Icon size={19} className={color} />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+          <span className={`text-xs font-semibold ${statusColor}`}>{statusTxt}</span>
+        </div>
       </div>
-      <p className="text-xs text-gray-400 mb-0.5">{label}</p>
-      <p className="text-sm font-bold text-white">{value}</p>
-      {extra && <p className="text-xs text-gray-500 mt-0.5">{extra}</p>}
-      <p className={`text-xs mt-1 font-medium ${txt}`}>{label2}</p>
+      <p className="text-xs text-gray-500 mb-0.5 uppercase tracking-wide">{label}</p>
+      <p className="text-base font-bold text-white leading-tight">{value}</p>
+      {extra && <p className="text-xs text-gray-500 mt-1.5">{extra}</p>}
     </div>
   );
 }
@@ -574,94 +587,193 @@ export default function AdminPanel({ user }: { user?: any }) {
         {/* ── OVERVIEW ── */}
         {tab === "overview" && (
           <>
-            {/* System health */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <SystemCard icon={Database} label="Vector DB (Qdrant)"
-                value={health.qdrant?.vectors != null ? `${health.qdrant.vectors} vectors` : "Qdrant"}
-                status={health.qdrant?.status || "warn"} color="text-blue-400"
-                extra={health.qdrant?.error ? health.qdrant.error.slice(0, 40) : undefined} />
-              <SystemCard icon={GitBranch} label="Graph DB (SQLite)"
-                value={health.neo4j?.nodes != null ? `${health.neo4j.nodes} nodes` : "Graph DB"}
-                status={health.neo4j?.status || "warn"} color="text-green-400"
-                extra="Backend: SQLite" />
-              <SystemCard icon={Zap} label="LLM"
-                value={health.llm?.model || "command-r7b-12-2024"}
-                status={health.llm?.status || "online"} color="text-yellow-400"
-                extra="Cohere API" />
-              <SystemCard icon={Shield} label="Auth (JWT)"
-                value="Secured" status="online" color="text-emerald-400"
-                extra={cacheStats ? `Cache: ${cacheStats.hit_rate_pct ?? 0}% hit` : undefined} />
-            </div>
-
-            {/* Service health warnings (Neo4j / Qdrant down) */}
-            {Object.entries(serviceHealth).some(([, v]) => v.status === "down") && (
-              <div className="space-y-1">
-                {Object.entries(serviceHealth)
-                  .filter(([, v]) => v.status === "down")
-                  .map(([name, v]) => (
-                    <div key={name} className="flex items-start gap-2 rounded-md border border-yellow-600/50 bg-yellow-900/20 px-4 py-2 text-sm text-yellow-300">
-                      <span className="mt-0.5 shrink-0">⚠️</span>
-                      <span>
-                        <strong className="capitalize">{name}</strong> is unreachable.
-                        {v.error ? ` Error: ${v.error}` : ""}
-                        {v.last_ok ? ` Last healthy: ${new Date(v.last_ok).toLocaleTimeString()}` : ""}
-                      </span>
+            {/* ── Hero banner ── */}
+            <div className="relative overflow-hidden rounded-2xl border border-brand-500/20 bg-gradient-to-br from-brand-900/40 via-gray-900 to-violet-900/20 p-6">
+              <div className="absolute inset-0 opacity-5" style={{
+                backgroundImage: "radial-gradient(circle at 20% 50%, #6366f1 0%, transparent 50%), radial-gradient(circle at 80% 20%, #8b5cf6 0%, transparent 40%)"
+              }} />
+              <div className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="text-xs text-emerald-400 font-semibold uppercase tracking-widest">Platform Live</span>
+                  </div>
+                  <h2 className="text-2xl font-bold text-white">CortexFlow Admin</h2>
+                  <p className="text-sm text-gray-400 mt-1">System is operational · All services monitored</p>
+                </div>
+                <div className="flex items-center gap-6 shrink-0">
+                  {[
+                    { label: "Queries", value: analytics?.total_queries ?? "—", color: "text-brand-400" },
+                    { label: "Users", value: analytics?.total_users ?? "—", color: "text-violet-400" },
+                    { label: "Cache Hit", value: cacheStats ? `${cacheStats.hit_rate_pct ?? 0}%` : "—", color: "text-emerald-400" },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} className="text-center">
+                      <p className={`text-2xl font-bold ${color}`}>{value}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
                     </div>
                   ))}
+                </div>
               </div>
-            )}
+            </div>
 
-            {/* Quick stats from analytics */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {[
-                { label: "Total Queries", value: analytics?.total_queries ?? "—", icon: BarChart3, color: "text-brand-400" },
-                { label: "Active Users", value: analytics?.total_users ?? "—", icon: Users, color: "text-violet-400" },
-                { label: "Active Rules", value: analytics?.active_rules ?? rules.filter(r => r.active).length, icon: Lock, color: "text-emerald-400" },
-                { label: "Security Events", value: secStats?.total_events ?? secEvents.length, icon: AlertTriangle, color: "text-red-400" },
-              ].map(({ label, value, icon: Icon, color }) => (
-                <div key={label} className="bg-gray-800 border border-gray-700 rounded-xl p-5 flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-xl bg-gray-700 flex items-center justify-center">
-                    <Icon size={18} className={color} />
+            {/* ── System health cards ── */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Service Health</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <SystemCard icon={Database} label="Vector DB (Qdrant)"
+                  value={health.qdrant?.vectors != null ? `${health.qdrant.vectors} vectors` : "Qdrant"}
+                  status={health.qdrant?.status || "warn"} color="text-blue-400"
+                  extra={health.qdrant?.error ? "Error — check service" : "Real-time vector search"} />
+                <SystemCard icon={GitBranch} label="Graph DB"
+                  value={health.neo4j?.nodes != null ? `${health.neo4j.nodes} nodes` : "SQLite"}
+                  status={health.neo4j?.status || "online"} color="text-emerald-400"
+                  extra="SQLite (Neo4j fallback)" />
+                <SystemCard icon={Zap} label="LLM Engine"
+                  value={health.llm?.model || "command-r7b-12-2024"}
+                  status={health.llm?.status || "online"} color="text-amber-400"
+                  extra="Cohere API · RAG powered" />
+                <SystemCard icon={Shield} label="Auth & Security"
+                  value="JWT + API Keys"
+                  status="online" color="text-violet-400"
+                  extra={`${secStats?.total_events ?? secEvents.length} events logged`} />
+              </div>
+
+              {/* Fallback pills */}
+              {Object.entries(serviceHealth).some(([, v]) => v.status === "down") && (
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {Object.entries(serviceHealth).filter(([, v]) => v.status === "down").map(([name, v]) => (
+                    <div key={name} className="flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800/80 px-3 py-1.5 text-xs">
+                      <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
+                      <span className="capitalize font-semibold text-gray-300">{name}</span>
+                      <span className="text-gray-500">— using SQLite fallback</span>
+                      {v.last_ok && <span className="text-gray-600">· last seen {new Date(v.last_ok).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* ── Big stat cards ── */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Platform Metrics</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[
+                  {
+                    label: "Total Queries",
+                    value: analytics?.total_queries ?? "—",
+                    icon: BarChart3,
+                    from: "from-brand-900/40", border: "border-brand-500/20",
+                    iconBg: "bg-brand-500/20", iconColor: "text-brand-400",
+                    sub: "all time",
+                  },
+                  {
+                    label: "Active Users",
+                    value: analytics?.total_users ?? "—",
+                    icon: Users,
+                    from: "from-violet-900/30", border: "border-violet-500/20",
+                    iconBg: "bg-violet-500/20", iconColor: "text-violet-400",
+                    sub: "registered",
+                  },
+                  {
+                    label: "Active Rules",
+                    value: analytics?.active_rules ?? rules.filter(r => r.active).length,
+                    icon: Lock,
+                    from: "from-emerald-900/30", border: "border-emerald-500/20",
+                    iconBg: "bg-emerald-500/20", iconColor: "text-emerald-400",
+                    sub: "security policies",
+                  },
+                  {
+                    label: "Security Events",
+                    value: secStats?.total_events ?? secEvents.length,
+                    icon: AlertTriangle,
+                    from: "from-red-900/20", border: "border-red-500/20",
+                    iconBg: "bg-red-500/20", iconColor: "text-red-400",
+                    sub: "detected total",
+                  },
+                ].map(({ label, value, icon: Icon, from, border, iconBg, iconColor, sub }) => (
+                  <div key={label} className={`rounded-2xl border bg-gradient-to-br ${from} to-gray-800/80 ${border} p-5`}>
+                    <div className={`w-10 h-10 rounded-xl ${iconBg} flex items-center justify-center mb-4`}>
+                      <Icon size={18} className={iconColor} />
+                    </div>
+                    <p className="text-3xl font-bold text-white leading-none mb-1">{value}</p>
+                    <p className="text-xs font-semibold text-gray-300">{label}</p>
+                    <p className="text-xs text-gray-600 mt-0.5">{sub}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── Recent security events — timeline style ── */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700/50">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-red-500/15 flex items-center justify-center">
+                    <AlertTriangle size={15} className="text-red-400" />
                   </div>
                   <div>
-                    <p className="text-xs text-gray-400">{label}</p>
-                    <p className="text-xl font-bold text-white">{value}</p>
+                    <h3 className="text-sm font-bold text-white">Recent Security Events</h3>
+                    <p className="text-xs text-gray-500">{secStats?.total_events ?? secEvents.length} total events logged</p>
                   </div>
                 </div>
-              ))}
-            </div>
-
-            {/* Recent security events */}
-            <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-white flex items-center gap-2">
-                  <AlertTriangle size={16} className="text-yellow-400" /> Recent Security Events
-                </h3>
-                <button onClick={fetchSecEvents} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition">
-                  <RefreshCw size={13} />
+                <button onClick={fetchSecEvents} className="p-1.5 hover:bg-gray-700 rounded-lg text-gray-500 hover:text-white transition">
+                  <RefreshCw size={13} className={secLoading ? "animate-spin" : ""} />
                 </button>
               </div>
+
               {secLoading ? (
-                <p className="text-sm text-gray-400">Loading…</p>
+                <div className="px-6 py-8 text-center text-sm text-gray-500">Loading events…</div>
               ) : secEvents.length === 0 ? (
-                <p className="text-sm text-gray-500">No security events recorded.</p>
+                <div className="px-6 py-8 text-center">
+                  <Shield size={32} className="mx-auto text-gray-700 mb-2" />
+                  <p className="text-sm text-gray-500">No security events — system is clean</p>
+                </div>
               ) : (
-                <div className="space-y-2">
-                  {secEvents.slice(0, 5).map(ev => (
-                    <div key={ev.id} className="flex items-center gap-3 py-2 border-b border-gray-700 last:border-0">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${
-                        ev.severity === "high" || ev.severity === "critical" ? "bg-red-400" :
-                        ev.severity === "medium" ? "bg-yellow-400" : "bg-blue-400"
-                      }`} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-white truncate">{ev.description}</p>
-                        <p className="text-xs text-gray-400">{ev.user_email || "unknown"}</p>
+                <div className="divide-y divide-gray-700/50">
+                  {secEvents.slice(0, 6).map(ev => {
+                    const sevStyles: Record<string, { dot: string; badge: string; bg: string }> = {
+                      critical: { dot: "bg-red-400",    badge: "text-red-300 bg-red-500/15 border-red-500/30",    bg: "bg-red-900/5" },
+                      high:     { dot: "bg-orange-400", badge: "text-orange-300 bg-orange-500/15 border-orange-500/30", bg: "bg-orange-900/5" },
+                      medium:   { dot: "bg-yellow-400", badge: "text-yellow-300 bg-yellow-500/15 border-yellow-500/30", bg: "" },
+                      low:      { dot: "bg-blue-400",   badge: "text-blue-300 bg-blue-500/15 border-blue-500/30",  bg: "" },
+                    };
+                    const sev = sevStyles[ev.severity] || sevStyles.low;
+                    // Show event_type if description looks like a severity word (bad data)
+                    const SWORDS = new Set(["medium", "high", "low", "critical", "info", "warn", "warning"]);
+                    const displayDesc = SWORDS.has((ev.description || "").trim().toLowerCase())
+                      ? (ev.event_type || ev.description).replace(/_/g, " ")
+                      : (ev.description || ev.event_type || "—");
+                    return (
+                      <div key={ev.id} className={`flex items-start gap-4 px-6 py-4 ${sev.bg} hover:bg-gray-700/20 transition`}>
+                        {/* Timeline dot */}
+                        <div className="flex flex-col items-center gap-1 pt-0.5">
+                          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${sev.dot}`} />
+                        </div>
+                        {/* Content */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-gray-100 leading-snug line-clamp-2">{displayDesc}</p>
+                          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                            <span className={`text-xs px-2 py-0.5 rounded-full border font-semibold capitalize ${sev.badge}`}>
+                              {ev.severity}
+                            </span>
+                            {ev.event_type && (
+                              <span className="text-xs text-gray-500 bg-gray-700/60 px-2 py-0.5 rounded-full">
+                                {ev.event_type.replace(/_/g, " ")}
+                              </span>
+                            )}
+                            <span className="text-xs text-gray-500">{ev.user_email || "system"}</span>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-xs text-gray-500">
+                            {new Date(ev.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </p>
+                          {ev.resolved && (
+                            <span className="text-xs text-emerald-400 font-medium">✓ resolved</span>
+                          )}
+                        </div>
                       </div>
-                      <span className="text-xs text-gray-500 shrink-0">
-                        {new Date(ev.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
