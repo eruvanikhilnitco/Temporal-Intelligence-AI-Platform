@@ -117,7 +117,12 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
           <div>
             <h1 className="text-base font-semibold text-white">{VIEW_LABELS[view]}</h1>
             <p className="text-xs text-gray-500 mt-0.5">
-              {view === "chat"      && (isAdmin ? "Hybrid RAG · Graph · Multi-hop · Agent Routing" : "AI-powered document assistant")}
+              {view === "chat"      && (
+                <span className="flex items-center gap-2">
+                  <span className="inline-flex w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  {isAdmin ? "Neural retrieval · Knowledge graph · Live" : "Intelligent document assistant · Live"}
+                </span>
+              )}
               {view === "upload"    && "Phase 1–3 ingestion pipeline"}
               {view === "admin"     && "System administration & security"}
               {view === "analytics" && "Performance metrics & engagement"}
@@ -182,7 +187,7 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
           <div className={view === "chat" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Chat"><ChatInterface userRole={user?.role} /></ErrorBoundary>
           </div>
-          {view === "upload"    && isAdmin && <ErrorBoundary label="Upload"><DocumentUpload /></ErrorBoundary>}
+          {view === "upload"    && isAdmin && <ErrorBoundary label="Upload"><DocumentUpload onNavigateToAdmin={() => setView("admin")} /></ErrorBoundary>}
           {view === "admin"     && isAdmin && <ErrorBoundary label="Admin Panel"><AdminPanel user={user} /></ErrorBoundary>}
           {view === "analytics" && isAdmin && <ErrorBoundary label="Analytics"><AnalyticsDashboard /></ErrorBoundary>}
           {view === "settings"  && isAdmin && <ErrorBoundary label="Settings"><SettingsPage /></ErrorBoundary>}

@@ -1,13 +1,6 @@
 import { useState, useEffect } from "react";
-import { TrendingUp, Zap, Brain, Database, GitBranch, BarChart3, RefreshCw, Users, AlertCircle, Activity } from "lucide-react";
+import { Brain, Database, GitBranch, BarChart3, RefreshCw, Users, AlertCircle, Activity } from "lucide-react";
 import axios from "axios";
-
-// ── Latency formatter ─────────────────────────────────────────────────────────
-function fmtLatency(ms: number | null | undefined): string {
-  if (ms == null) return "—";
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms)}ms`;
-}
 
 // ── Area line chart ───────────────────────────────────────────────────────────
 function AreaChart({ data, color }: { data: number[]; color: string }) {
@@ -34,7 +27,7 @@ function AreaChart({ data, color }: { data: number[]; color: string }) {
   );
 }
 
-// ── Sparkline mini bars ───────────────────────────────────────────────────────
+// ── Sparkline mini bars ──────────────────────────────────────────────────────
 function SparkBars({ data, color }: { data: number[]; color: string }) {
   const max = Math.max(...data, 1);
   return (
@@ -51,47 +44,6 @@ function SparkBars({ data, color }: { data: number[]; color: string }) {
           }}
         />
       ))}
-    </div>
-  );
-}
-
-// ── Cache ring gauge ──────────────────────────────────────────────────────────
-function RingGauge({ value, color }: { value: number; color: string }) {
-  const r = 40;
-  const circ = 2 * Math.PI * r;
-  const dash = Math.min(value / 100, 1) * circ;
-  return (
-    <div style={{ position: "relative", width: 100, height: 100, flexShrink: 0 }}>
-      <svg width="100" height="100" viewBox="0 0 100 100" style={{ position: "absolute", inset: 0 }}>
-        <circle cx="50" cy="50" r={r} fill="none" stroke="#1f2937" strokeWidth="8" />
-        <circle
-          cx="50" cy="50" r={r}
-          fill="none" stroke={color} strokeWidth="8"
-          strokeDasharray={`${dash} ${circ}`}
-          strokeLinecap="round"
-          transform="rotate(-90 50 50)"
-        />
-      </svg>
-      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ fontSize: 20, fontWeight: 700, color: "white", lineHeight: 1 }}>{value.toFixed(0)}%</span>
-        <span style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>hit rate</span>
-      </div>
-    </div>
-  );
-}
-
-// ── Stat card ─────────────────────────────────────────────────────────────────
-function StatCard({ label, value, icon: Icon, colorClass, borderClass, fromClass, note }: any) {
-  return (
-    <div className={`rounded-2xl border p-5 bg-gradient-to-br ${fromClass} to-gray-800/80 ${borderClass}`}>
-      <div className="flex items-start justify-between mb-3">
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center bg-gray-800`}>
-          <Icon size={16} className={colorClass} />
-        </div>
-        {note && <span className={`text-xs px-2 py-0.5 rounded-full bg-gray-800 ${colorClass}`}>{note}</span>}
-      </div>
-      <p className="text-3xl font-bold text-white leading-none mb-1">{value}</p>
-      <p className="text-xs text-gray-400">{label}</p>
     </div>
   );
 }
@@ -115,10 +67,17 @@ export default function AnalyticsDashboard() {
     try {
       const token = localStorage.getItem("accessToken");
       if (!token) { setFetchError("Not authenticated."); setLoading(false); return; }
-      const res = await axios.get("/admin/analytics", { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get("/admin/analytics", {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000,
+      });
       setData(res.data);
     } catch (e: any) {
-      setFetchError(e?.response?.data?.detail || "Failed to load analytics.");
+      if (axios.isCancel(e) || e?.code === "ECONNABORTED") {
+        setFetchError("Request timed out. The server may be restarting — click Refresh to retry.");
+      } else {
+        setFetchError(e?.response?.data?.detail || "Failed to load analytics. Click Refresh to retry.");
+      }
       setData(null);
     } finally {
       setLoading(false);
@@ -127,17 +86,8 @@ export default function AnalyticsDashboard() {
 
   const daily     = data?.daily_queries  ?? new Array(14).fill(0);
   const hourly    = data?.hourly_queries ?? new Array(24).fill(0);
-  const cacheRate  = Number(data?.cache_hit_rate  ?? 0);
   const graphRate  = Number(data?.graph_usage_rate ?? 0);
   const confidence = Number(data?.avg_confidence   ?? 0);
-
-  const retrieval = data?.retrieval_quality ?? [
-    { type: "Fact lookup",  score: 0, queries: 0 },
-    { type: "Summary",      score: 0, queries: 0 },
-    { type: "Multi-hop",    score: 0, queries: 0 },
-    { type: "Analytical",   score: 0, queries: 0 },
-    { type: "Comparison",   score: 0, queries: 0 },
-  ];
 
   const hourlyMax = Math.max(...hourly, 1);
 
@@ -197,26 +147,6 @@ export default function AnalyticsDashboard() {
               <p className="text-xs text-gray-400 mb-3">Total Queries</p>
               <SparkBars data={daily} color="#6366f1" />
               <p className="text-xs text-gray-600 mt-1">Last 14 days</p>
-            </div>
-
-            {/* Avg Latency */}
-            <StatCard
-              label="Avg Response Time"
-              value={fmtLatency(data?.avg_latency_ms)}
-              icon={Zap}
-              colorClass="text-amber-400"
-              borderClass="border-amber-500/20"
-              fromClass="from-amber-900/20"
-              note="avg"
-            />
-
-            {/* Cache Hit Rate — centered ring */}
-            <div className="rounded-2xl border border-emerald-500/20 p-5 bg-gradient-to-br from-emerald-900/20 to-gray-800/80 flex flex-col items-center justify-center gap-2">
-              <RingGauge value={cacheRate} color="#10b981" />
-              <p className="text-xs font-semibold text-white">Cache Hit Rate</p>
-              <p className={`text-xs font-medium ${cacheRate >= 20 ? "text-emerald-400" : cacheRate > 0 ? "text-yellow-400" : "text-gray-500"}`}>
-                {cacheRate >= 20 ? "● Excellent" : cacheRate > 0 ? "◐ Building" : "○ Warming up"}
-              </p>
             </div>
 
             {/* Users + graph/confidence mini bars */}
@@ -303,35 +233,6 @@ export default function AnalyticsDashboard() {
             </div>
           </div>
 
-          {/* ── Row 4: Retrieval quality ── */}
-          <div className="bg-gray-800 border border-gray-700 rounded-2xl p-6">
-            <h3 className="text-sm font-semibold text-white mb-5">Retrieval Quality by Query Type</h3>
-            <div className="space-y-4">
-              {retrieval.map(({ type, score, queries }: any) => {
-                const pct = Number(score) || 0;
-                const barColor = pct >= 80 ? "#10b981" : pct >= 60 ? "#6366f1" : pct >= 40 ? "#f59e0b" : "#6b7280";
-                const label = pct >= 80 ? "Excellent" : pct >= 60 ? "Good" : pct >= 40 ? "Fair" : "Low";
-                return (
-                  <div key={type}>
-                    <div className="flex items-center justify-between text-xs mb-1.5">
-                      <span className="text-gray-200 font-medium">{type}</span>
-                      <div className="flex items-center gap-3">
-                        <span className="text-gray-500">{queries} q/day</span>
-                        <span className="text-xs px-2 py-0.5 rounded-full border" style={{ color: barColor, borderColor: barColor + "44", background: barColor + "11" }}>
-                          {label}
-                        </span>
-                        <span className="font-bold w-8 text-right" style={{ color: barColor }}>{pct}%</span>
-                      </div>
-                    </div>
-                    <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: barColor }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
           {/* ── Row 5: RAG pipeline ── */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {PHASES.map(({ icon: Icon, label, name, latency, color, tc }) => (
@@ -359,23 +260,6 @@ export default function AnalyticsDashboard() {
             ))}
           </div>
 
-          {/* ── Row 6: Quick metrics ── */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label: "Graph Usage Rate",  value: `${graphRate.toFixed(1)}%`,  icon: GitBranch, tc: "text-violet-400" },
-              { label: "Avg Confidence",    value: `${confidence.toFixed(1)}%`, icon: TrendingUp, tc: "text-blue-400"   },
-              { label: "Cache Hit Rate",    value: `${cacheRate.toFixed(1)}%`,  icon: Database,  tc: "text-emerald-400" },
-              { label: "Avg Latency",       value: fmtLatency(data?.avg_latency_ms), icon: Zap, tc: "text-amber-400" },
-            ].map(({ label, value, icon: Icon, tc }) => (
-              <div key={label} className="bg-gray-800 border border-gray-700 rounded-xl p-4 flex items-center gap-3">
-                <Icon size={16} className={tc} />
-                <div>
-                  <p className="text-xs text-gray-500">{label}</p>
-                  <p className="text-lg font-bold text-white">{value}</p>
-                </div>
-              </div>
-            ))}
-          </div>
         </>
       )}
     </div>

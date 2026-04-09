@@ -425,6 +425,7 @@ def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
     """
     import requests as _req
     import tempfile as _tmp
+    from urllib.parse import quote as _quote
     from app.services.rag_service import ingest_file
 
     SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
@@ -439,7 +440,10 @@ def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
     import re as _re
     m = _re.search(r"https://([^/]+)/sites/([^/?#]+)", req.site_url)
     if not m:
-        raise RuntimeError(f"Cannot parse site URL: {req.site_url}")
+        raise RuntimeError(
+            f"Cannot parse site URL: {req.site_url!r}. "
+            "Expected format: https://yourcompany.sharepoint.com/sites/YourSite"
+        )
     hostname, site_name = m.group(1), m.group(2)
 
     site_info = _graph_get(
@@ -448,15 +452,22 @@ def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
     )
     site_id = site_info["id"]
 
-    # Find the drive (document library) by name
+    # Find the drive (document library) by name — case-insensitive match
     drives = _graph_get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", token)
+    drive_list = drives.get("value", [])
     drive = next(
-        (d for d in drives.get("value", []) if d.get("name") == req.library_name),
+        (d for d in drive_list if d.get("name", "").lower() == req.library_name.lower()),
         None,
     )
+    if not drive and drive_list:
+        # Fallback: use first available drive
+        drive = drive_list[0]
+        logger.warning(
+            "[SharePoint] Library %r not found; using first available: %r",
+            req.library_name, drive.get("name"),
+        )
     if not drive:
-        # Fallback: use first drive
-        drive = drives.get("value", [{}])[0]
+        raise RuntimeError(f"No document libraries found for site: {site_id}")
     drive_id = drive.get("id", "")
 
     ingested: list = []
@@ -465,10 +476,14 @@ def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
     def traverse(item_id: str, depth: int = 0):
         if depth > 10:
             return
-        children = _graph_get(
-            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children",
-            token,
-        )
+        try:
+            children = _graph_get(
+                f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children",
+                token,
+            )
+        except Exception as e:
+            logger.warning("[SharePoint] Failed to list children of %s: %s", item_id, e)
+            return
         for item in children.get("value", []):
             if "folder" in item:
                 if req.recursive:
@@ -478,14 +493,24 @@ def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
                 ext = os.path.splitext(name)[1].lower()
                 if ext not in allowed_exts:
                     continue
+                # Prefer the pre-authenticated download URL; fall back to Graph API download
                 dl_url = item.get("@microsoft.graph.downloadUrl", "")
                 if not dl_url:
-                    errors.append({"file": name, "error": "No download URL"})
+                    # Build a direct download URL via Graph API
+                    item_id_val = item.get("id", "")
+                    if item_id_val:
+                        dl_url = (
+                            f"https://graph.microsoft.com/v1.0/drives/{drive_id}"
+                            f"/items/{item_id_val}/content"
+                        )
+                if not dl_url:
+                    errors.append({"file": name, "error": "No download URL available"})
                     continue
                 try:
-                    dl = _req.get(dl_url, timeout=60)
+                    dl_headers = {"Authorization": f"Bearer {token}"}
+                    dl = _req.get(dl_url, headers=dl_headers, timeout=120, allow_redirects=True)
                     if not dl.ok:
-                        errors.append({"file": name, "error": f"HTTP {dl.status_code}"})
+                        errors.append({"file": name, "error": f"Download failed HTTP {dl.status_code}"})
                         continue
                     with _tmp.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
                         tmp.write(dl.content)
@@ -504,13 +529,22 @@ def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
                 except Exception as e:
                     errors.append({"file": name, "error": str(e)[:200]})
 
-    # Start from folder_path or root
+    # Start from folder_path or root — URL-encode path segments to handle spaces
     if req.folder_path:
-        root = _graph_get(
-            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{req.folder_path}",
-            token,
-        )
-        root_id = root["id"]
+        # Encode each path segment separately to preserve slashes
+        encoded_path = "/".join(_quote(seg, safe="") for seg in req.folder_path.strip("/").split("/"))
+        try:
+            root = _graph_get(
+                f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{encoded_path}",
+                token,
+            )
+            root_id = root["id"]
+        except Exception as e:
+            raise RuntimeError(
+                f"Folder not found: {req.folder_path!r}. "
+                f"Graph API error: {e}. "
+                "Check the sub-folder path is correct (case-sensitive, use forward slashes)."
+            )
     else:
         root_id = "root"
 
@@ -589,6 +623,177 @@ def sharepoint_ingest(
                 "are set in .env and that the app registration has Sites.Read.All permission."
             ),
         )
+
+
+class SharePointBrowseRequest(BaseModel):
+    site_url: str
+    library_name: str = "Shared Documents"
+    item_id: Optional[str] = None   # None = root; otherwise browse this item's children
+
+
+def _resolve_drive(site_url: str, library_name: str, token: str):
+    """Return (site_id, drive_id) for a SharePoint site + library."""
+    import re as _re
+    m = _re.search(r"https://([^/]+)/sites/([^/?#]+)", site_url)
+    if not m:
+        raise RuntimeError(f"Cannot parse site URL: {site_url!r}")
+    hostname, site_name = m.group(1), m.group(2)
+    site_info = _graph_get(
+        f"https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site_name}", token
+    )
+    site_id = site_info["id"]
+    drives = _graph_get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", token)
+    drive_list = drives.get("value", [])
+    drive = next(
+        (d for d in drive_list if d.get("name", "").lower() == library_name.lower()), None
+    ) or (drive_list[0] if drive_list else None)
+    if not drive:
+        raise RuntimeError(f"No drives found for site {site_id}")
+    return site_id, drive.get("id", "")
+
+
+@router.post("/sharepoint/browse")
+def sharepoint_browse(
+    req: SharePointBrowseRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Browse one level of a SharePoint drive.
+    Returns files + sub-folders at the given item_id (or root if None).
+    """
+    try:
+        token = _get_graph_token()
+        _, drive_id = _resolve_drive(req.site_url, req.library_name, token)
+        item_id = req.item_id or "root"
+        data = _graph_get(
+            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children"
+            "?$select=id,name,file,folder,size,lastModifiedDateTime,@microsoft.graph.downloadUrl",
+            token,
+        )
+        items = []
+        for it in data.get("value", []):
+            if "folder" in it:
+                items.append({
+                    "id": it["id"],
+                    "name": it["name"],
+                    "type": "folder",
+                    "child_count": it["folder"].get("childCount", 0),
+                    "modified": it.get("lastModifiedDateTime", ""),
+                })
+            elif "file" in it:
+                ext = os.path.splitext(it["name"])[1].lower()
+                items.append({
+                    "id": it["id"],
+                    "name": it["name"],
+                    "type": "file",
+                    "ext": ext,
+                    "size": it.get("size", 0),
+                    "modified": it.get("lastModifiedDateTime", ""),
+                    "downloadUrl": it.get("@microsoft.graph.downloadUrl", ""),
+                })
+        # folders first, then files
+        items.sort(key=lambda x: (0 if x["type"] == "folder" else 1, x["name"].lower()))
+        return {"drive_id": drive_id, "item_id": item_id, "items": items}
+    except Exception as e:
+        logger.error("[SharePoint] Browse failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Browse failed: {str(e)[:400]}")
+
+
+class SharePointIngestItemsRequest(BaseModel):
+    site_url: str
+    library_name: str = "Shared Documents"
+    items: List[dict]   # [{id, name, downloadUrl?}]
+
+
+@router.post("/sharepoint/ingest/items")
+def sharepoint_ingest_selected(
+    req: SharePointIngestItemsRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Download selected SharePoint files and submit them to the async ingest queue.
+    Uses the same pipeline as regular file upload — no direct Qdrant dependency here.
+    items: [{id, name, downloadUrl?}]
+    """
+    import requests as _req
+    import shutil
+    from pathlib import Path
+
+    SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
+    UPLOAD_DIR = Path("uploaded_docs")
+    UPLOAD_DIR.mkdir(exist_ok=True)
+
+    try:
+        token = _get_graph_token()
+        _, drive_id = _resolve_drive(req.site_url, req.library_name, token)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SharePoint auth error: {str(e)[:300]}")
+
+    # Lazy-import the async queue (already running in the app process)
+    try:
+        from services.ingest_queue import get_ingest_queue
+        queue = get_ingest_queue()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingest queue unavailable: {e}")
+
+    queued: list = []
+    errors: list = []
+
+    for item in req.items:
+        name = item.get("name", "unknown")
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in SUPPORTED_EXTS:
+            errors.append({"file": name, "error": f"Unsupported file type: {ext}"})
+            continue
+
+        # Build download URL: prefer pre-signed URL, fall back to Graph API content endpoint
+        dl_url = item.get("downloadUrl", "").strip()
+        item_id_val = item.get("id", "")
+        if not dl_url and item_id_val:
+            dl_url = (
+                f"https://graph.microsoft.com/v1.0/drives/{drive_id}"
+                f"/items/{item_id_val}/content"
+            )
+        if not dl_url:
+            errors.append({"file": name, "error": "No download URL and no item ID"})
+            continue
+
+        try:
+            dl_headers = {"Authorization": f"Bearer {token}"}
+            dl = _req.get(dl_url, headers=dl_headers, timeout=120, allow_redirects=True)
+            if not dl.ok:
+                errors.append({"file": name, "error": f"Download failed: HTTP {dl.status_code}"})
+                continue
+
+            # Save to uploaded_docs/ with original filename
+            dest = UPLOAD_DIR / name
+            # If a file with same name already exists, overwrite
+            dest.write_bytes(dl.content)
+
+            # Submit to async background queue — same as /upload endpoint
+            job_id = queue.submit(
+                file_path=str(dest),
+                original_filename=name,
+                tenant_id=current_user.get("tenant_id"),
+            )
+            queued.append({"file": name, "job_id": job_id, "size": len(dl.content)})
+            logger.info("[SharePoint] Queued for ingest: %s (job=%s)", name, job_id)
+
+        except Exception as e:
+            errors.append({"file": name, "error": str(e)[:200]})
+
+    return {
+        "status": "queued",
+        "ingested": len(queued),
+        "errors": len(errors),
+        "files": queued,
+        "error_details": errors,
+        "message": (
+            f"{len(queued)} file(s) downloaded and queued for background ingestion. "
+            "Check the ETL queue status for progress."
+            if queued else "No files were successfully queued."
+        ),
+    }
 
 
 # ── Document Access Control Management ───────────────────────────────────────

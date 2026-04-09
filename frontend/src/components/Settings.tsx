@@ -87,7 +87,6 @@ export default function SettingsPage() {
     { id: "api", label: "API Keys", icon: Key },
     { id: "model", label: "Model", icon: Zap },
     { id: "cache", label: "Cache", icon: Database },
-    { id: "security", label: "Security", icon: Shield },
     { id: "notifications", label: "Alerts", icon: Bell },
   ];
 
@@ -243,53 +242,6 @@ export default function SettingsPage() {
               <button className="w-full py-2.5 border border-red-500/30 hover:border-red-500/60 text-red-400 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2">
                 <RefreshCw size={14} /> Clear All Cache
               </button>
-            </div>
-          </Section>
-        )}
-
-        {/* ── SECURITY ── */}
-        {tab === "security" && (
-          <Section icon={Shield} title="Security Settings" desc="Authentication, rate limiting, and access control configuration.">
-            <div className="space-y-5">
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-2">Rate Limit (requests/minute)</label>
-                <input
-                  type="number"
-                  value={settings.rateLimit}
-                  onChange={e => setSettings(p => ({ ...p, rateLimit: e.target.value }))}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500 transition"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-2">Session Timeout (hours)</label>
-                <input
-                  type="number"
-                  value={settings.sessionTimeout}
-                  onChange={e => setSettings(p => ({ ...p, sessionTimeout: e.target.value }))}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-brand-500 transition"
-                />
-              </div>
-
-              <div className="pt-2">
-                <button className="w-full py-2.5 border border-yellow-500/30 hover:border-yellow-500/60 text-yellow-400 rounded-xl text-sm font-medium transition">
-                  Change Password
-                </button>
-              </div>
-
-              <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 text-xs space-y-1.5">
-                {[
-                  { k: "Auth method", v: "JWT (HS256)" },
-                  { k: "Password hashing", v: "bcrypt (rounds: 12)" },
-                  { k: "Token expiry", v: "24h access / 7d refresh" },
-                  { k: "RBAC levels", v: "public, user, admin" },
-                ].map(({ k, v }) => (
-                  <div key={k} className="flex justify-between">
-                    <span className="text-gray-500">{k}</span>
-                    <span className="text-emerald-400 font-mono">{v}</span>
-                  </div>
-                ))}
-              </div>
             </div>
           </Section>
         )}

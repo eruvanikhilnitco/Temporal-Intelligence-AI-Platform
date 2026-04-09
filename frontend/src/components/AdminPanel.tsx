@@ -653,56 +653,6 @@ export default function AdminPanel({ user }: { user?: any }) {
               )}
             </div>
 
-            {/* ── Big stat cards ── */}
-            <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Platform Metrics</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {[
-                  {
-                    label: "Total Queries",
-                    value: analytics?.total_queries ?? "—",
-                    icon: BarChart3,
-                    from: "from-brand-900/40", border: "border-brand-500/20",
-                    iconBg: "bg-brand-500/20", iconColor: "text-brand-400",
-                    sub: "all time",
-                  },
-                  {
-                    label: "Active Users",
-                    value: analytics?.total_users ?? "—",
-                    icon: Users,
-                    from: "from-violet-900/30", border: "border-violet-500/20",
-                    iconBg: "bg-violet-500/20", iconColor: "text-violet-400",
-                    sub: "registered",
-                  },
-                  {
-                    label: "Active Rules",
-                    value: analytics?.active_rules ?? rules.filter(r => r.active).length,
-                    icon: Lock,
-                    from: "from-emerald-900/30", border: "border-emerald-500/20",
-                    iconBg: "bg-emerald-500/20", iconColor: "text-emerald-400",
-                    sub: "security policies",
-                  },
-                  {
-                    label: "Security Events",
-                    value: secStats?.total_events ?? secEvents.length,
-                    icon: AlertTriangle,
-                    from: "from-red-900/20", border: "border-red-500/20",
-                    iconBg: "bg-red-500/20", iconColor: "text-red-400",
-                    sub: "detected total",
-                  },
-                ].map(({ label, value, icon: Icon, from, border, iconBg, iconColor, sub }) => (
-                  <div key={label} className={`rounded-2xl border bg-gradient-to-br ${from} to-gray-800/80 ${border} p-5`}>
-                    <div className={`w-10 h-10 rounded-xl ${iconBg} flex items-center justify-center mb-4`}>
-                      <Icon size={18} className={iconColor} />
-                    </div>
-                    <p className="text-3xl font-bold text-white leading-none mb-1">{value}</p>
-                    <p className="text-xs font-semibold text-gray-300">{label}</p>
-                    <p className="text-xs text-gray-600 mt-0.5">{sub}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
             {/* ── Recent security events — timeline style ── */}
             <div className="bg-gray-800/50 border border-gray-700 rounded-2xl overflow-hidden">
               <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700/50">

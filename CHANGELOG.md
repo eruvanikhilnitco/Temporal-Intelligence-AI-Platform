@@ -5,6 +5,62 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [5.4.1] — 2026-04-09
+
+### Fixed
+- `frontend/src/components/KnowledgeGraphUI.tsx` — added `timeout: 15000` to `GET /admin/graph/data`; distinguishes timeout vs other errors with appropriate messages; no more infinite loading spinner when backend is down
+- `frontend/src/components/Analytics.tsx` — removed unused imports (`TrendingUp`, `Zap`), unused functions (`fmtLatency`, `RingGauge`, `StatCard`), and unused variables (`cacheRate`, `retrieval`) — clears all IDE warnings
+
+### Added
+- `frontend/src/components/DocumentUpload.tsx` — after successful SharePoint ingest, shows "View Chunks in Admin Panel →" button that navigates directly to Admin Panel (Chunks tab visible there)
+- `frontend/src/pages/Dashboard.tsx` — passes `onNavigateToAdmin` callback to `DocumentUpload` to enable cross-view navigation
+
+---
+
+## [5.4.0] — 2026-04-09
+
+### Fixed — SharePoint (critical)
+- `app/api/admin_routes.py` — `sharepoint_ingest_selected`: replaced direct `ingest_file()` call with async ingest queue (`get_ingest_queue().submit()`). Direct call failed when `_rag` singleton was None (Qdrant not yet connected in web worker). Files are now downloaded, saved to `uploaded_docs/`, and queued exactly like regular uploads — returns `status: queued` immediately.
+
+### Removed
+- `frontend/src/components/AdminPanel.tsx` — removed Platform Metrics section (Total Queries, Active Users, Active Rules, Security Events cards)
+- `frontend/src/components/Settings.tsx` — removed Security tab and its content block entirely
+- `frontend/src/components/DocumentUpload.tsx` — removed ETL Pipeline tab entirely
+- `frontend/src/components/Analytics.tsx` — removed Avg Latency & Cache Hit Rate cards from top row; removed Retrieval Quality by Query Type chart; removed Quick Metrics bottom row
+- `frontend/src/components/KnowledgeGraphUI.tsx` — removed 3D canvas graph and 3D tab button; right pane now shows Entity Relationships table only
+
+---
+
+## [5.3.0] — 2026-04-09
+
+### Added
+- `app/api/admin_routes.py` — `POST /admin/sharepoint/browse`: lazy file-tree browser, returns one folder level at a time (folders + files with size/modified)
+- `app/api/admin_routes.py` — `POST /admin/sharepoint/ingest/items`: ingest specific selected files by Graph API item ID; no more "ingest all" failures
+- `app/api/admin_routes.py` — `_resolve_drive()` helper extracted to avoid code duplication
+- `app/api/routes.py` — `GET /chat/sessions`: grouped session list (title = first question, message count, last activity, avg confidence)
+- `app/api/routes.py` — `GET /chat/sessions/{session_id}`: restore all messages in a session
+- `app/api/routes.py` — `/chat/history` now includes `session_id` in response
+
+### Changed
+- `frontend/src/components/DocumentUpload.tsx` — SharePoint tab fully replaced with interactive file browser: connect → browse tree → expand folders → check files → ingest selected; "Upload folder" button per folder
+- `frontend/src/components/ChatInterface.tsx` — Sidebar completely redesigned: shows sessions grouped Today/Yesterday/Previous 7 days/Older (like Claude/ChatGPT); click session to restore full conversation; each `/ask` sends `session_id`; dark `#111318` sidebar, glass-morphism AI bubbles, gradient send button
+
+---
+
+## [5.2.0] — 2026-04-09
+
+### Fixed
+- `app/api/admin_routes.py` — SharePoint: URL-encode folder path segments (fixes spaces in paths like `Test/ask me/...`)
+- `app/api/admin_routes.py` — SharePoint: case-insensitive library name matching; fallback to first drive with warning log
+- `app/api/admin_routes.py` — SharePoint: better error messages for site URL parse failure and missing folder
+- `app/api/admin_routes.py` — SharePoint: fallback download URL via Graph API content endpoint when `@microsoft.graph.downloadUrl` absent; pass Bearer token on download requests; increased download timeout to 120s
+
+### Changed
+- `frontend/src/components/ChatInterface.tsx` — Full UI redesign: glass-morphism AI bubbles with gradient top border, gradient user bubbles, redesigned sidebar with wider spacing, new suggestion cards with icons, gradient send button, animated typing dots, polished action row
+- `frontend/src/pages/Dashboard.tsx` — Chat subtitle: replaced "Hybrid RAG · Graph · Multi-hop · Agent Routing" with animated pulse dot + "Neural retrieval · Knowledge graph · Live"
+
+---
+
 ## [5.1.0] — 2026-04-08
 
 ### Changed

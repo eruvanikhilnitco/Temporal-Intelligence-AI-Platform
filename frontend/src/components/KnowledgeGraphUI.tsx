@@ -503,16 +503,23 @@ export default function KnowledgeGraphUI() {
   const [error, setError]               = useState("");
   const [searchQuery, setSearchQuery]   = useState("");
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [rightTab, setRightTab]         = useState<"3d" | "table">("3d");
+  const [rightTab, setRightTab]         = useState<"table">("table");
 
   const fetchGraph = useCallback(async () => {
     setLoading(true); setError(""); setSelectedNode(null);
     try {
       const token = localStorage.getItem("accessToken");
-      const res = await axios.get("/admin/graph/data", { headers: { Authorization: `Bearer ${token}` } });
+      const res = await axios.get("/admin/graph/data", {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000,
+      });
       setGraphData(res.data);
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Failed to load graph data.");
+      if (axios.isCancel(err) || err?.code === "ECONNABORTED") {
+        setError("Request timed out. The server may be restarting — click Refresh to retry.");
+      } else {
+        setError(err.response?.data?.detail || "Failed to load graph data. Click Refresh to retry.");
+      }
     } finally {
       setLoading(false);
     }
@@ -645,22 +652,9 @@ export default function KnowledgeGraphUI() {
             {/* Tab bar */}
             <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800 shrink-0">
               <div className="flex gap-1">
-                <button
-                  onClick={() => setRightTab("3d")}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                    rightTab === "3d" ? "bg-brand-600 text-white" : "text-gray-500 hover:text-gray-300 hover:bg-gray-800"
-                  }`}
-                >
-                  <Share2 size={13} /> 3D Graph
-                </button>
-                <button
-                  onClick={() => setRightTab("table")}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                    rightTab === "table" ? "bg-brand-600 text-white" : "text-gray-500 hover:text-gray-300 hover:bg-gray-800"
-                  }`}
-                >
-                  <Table2 size={13} /> Table
-                </button>
+                <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-brand-600 text-white">
+                  <Table2 size={13} /> Entity Relationships
+                </span>
               </div>
               {selectedNode ? (
                 <div className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg ${badgeClass(selectedNode.type)}`}>
@@ -679,24 +673,14 @@ export default function KnowledgeGraphUI() {
 
             {/* Content */}
             <div className="flex-1 overflow-hidden">
-              {rightTab === "3d" && (
-                <Graph3DCanvas
-                  nodes={graphData!.nodes}
+              <div className="h-full overflow-y-auto">
+                <RelationshipsTable
                   edges={graphData!.edges}
                   nodeMap={nodeMap}
-                  onNodeSelect={node => setSelectedNode(node)}
+                  search={searchQuery}
+                  selectedNode={selectedNode}
                 />
-              )}
-              {rightTab === "table" && (
-                <div className="h-full overflow-y-auto">
-                  <RelationshipsTable
-                    edges={graphData!.edges}
-                    nodeMap={nodeMap}
-                    search={searchQuery}
-                    selectedNode={selectedNode}
-                  />
-                </div>
-              )}
+              </div>
             </div>
           </div>
         </div>

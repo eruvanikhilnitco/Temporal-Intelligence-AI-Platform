@@ -447,12 +447,90 @@ def get_chat_history(
     return [
         {
             "id": l.id,
+            "session_id": l.session_id,
             "question": l.question,
             "answer": l.answer[:500],
             "query_type": l.query_type,
             "graph_used": l.graph_used,
             "confidence": l.confidence,
             "feedback": l.feedback,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        }
+        for l in logs
+    ]
+
+
+@router.get("/chat/sessions")
+def get_chat_sessions(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Return all chat sessions for the authenticated user.
+    Each session is identified by session_id with title = first question,
+    message count, last activity, and avg confidence.
+    """
+    logs = (
+        db.query(ChatLog)
+        .filter(ChatLog.user_id == current_user["user_id"])
+        .order_by(ChatLog.created_at.asc())
+        .all()
+    )
+    sessions: dict = {}
+    for l in logs:
+        sid = l.session_id or l.id
+        if sid not in sessions:
+            sessions[sid] = {
+                "session_id": sid,
+                "title": l.question[:80] if l.question else "Untitled",
+                "message_count": 0,
+                "last_activity": None,
+                "avg_confidence": 0.0,
+                "confidences": [],
+                "created_at": l.created_at.isoformat() if l.created_at else None,
+            }
+        sessions[sid]["message_count"] += 1
+        sessions[sid]["last_activity"] = l.created_at.isoformat() if l.created_at else None
+        if l.confidence:
+            sessions[sid]["confidences"].append(l.confidence)
+
+    result = []
+    for s in sessions.values():
+        confs = s.pop("confidences")
+        s["avg_confidence"] = round(sum(confs) / len(confs)) if confs else 0
+        result.append(s)
+
+    # Most recent sessions first
+    result.sort(key=lambda x: x["last_activity"] or "", reverse=True)
+    return result[:50]
+
+
+@router.get("/chat/sessions/{session_id}")
+def get_session_messages(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return all messages in a specific session (for session restore)."""
+    logs = (
+        db.query(ChatLog)
+        .filter(
+            ChatLog.user_id == current_user["user_id"],
+            ChatLog.session_id == session_id,
+        )
+        .order_by(ChatLog.created_at.asc())
+        .all()
+    )
+    return [
+        {
+            "id": l.id,
+            "question": l.question,
+            "answer": l.answer,
+            "query_type": l.query_type,
+            "graph_used": l.graph_used,
+            "confidence": l.confidence,
+            "feedback": l.feedback,
+            "chat_log_id": l.id,
             "created_at": l.created_at.isoformat() if l.created_at else None,
         }
         for l in logs

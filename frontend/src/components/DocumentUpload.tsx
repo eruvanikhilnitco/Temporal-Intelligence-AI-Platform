@@ -195,29 +195,169 @@ function IngestQueueStatus() {
   );
 }
 
-// ── SharePoint Connector (Microsoft Graph API) ────────────────────────────────
-function SharePointConnector() {
+// ── SharePoint File Browser ───────────────────────────────────────────────────
+const SUPPORTED_EXTS = new Set([".pdf",".xml",".txt",".docx",".json",".csv",".html",".pptx",".md"]);
+
+function fileIcon(ext: string): string {
+  if (ext === ".pdf") return "📄";
+  if ([".docx",".doc"].includes(ext)) return "📝";
+  if ([".xlsx",".csv"].includes(ext)) return "📊";
+  if (ext === ".pptx") return "📑";
+  if (ext === ".txt" || ext === ".md") return "📃";
+  return "📎";
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes/1024).toFixed(0)}KB`;
+  return `${(bytes/(1024*1024)).toFixed(1)}MB`;
+}
+
+interface SPItem {
+  id: string;
+  name: string;
+  type: "file" | "folder";
+  ext?: string;
+  size?: number;
+  modified?: string;
+  child_count?: number;
+  downloadUrl?: string;
+  children?: SPItem[] | null; // null = not loaded, [] = empty
+  loading?: boolean;
+}
+
+function FolderNode({
+  item,
+  depth,
+  siteUrl,
+  libraryName,
+  selectedIds,
+  onToggleFile,
+  onSelectFolder,
+  onLoadChildren,
+}: {
+  item: SPItem;
+  depth: number;
+  siteUrl: string;
+  libraryName: string;
+  selectedIds: Set<string>;
+  onToggleFile: (item: SPItem) => void;
+  onSelectFolder: (item: SPItem) => void;
+  onLoadChildren: (item: SPItem) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  function handleFolderClick() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && item.children === null) {
+      onLoadChildren(item);
+    }
+  }
+
+  const indent = depth * 16;
+
+  if (item.type === "folder") {
+    return (
+      <div>
+        <div
+          className="flex items-center gap-2 py-1.5 px-2 hover:bg-white/5 rounded-lg cursor-pointer group"
+          style={{ paddingLeft: `${8 + indent}px` }}
+        >
+          <button onClick={handleFolderClick} className="flex items-center gap-2 flex-1 min-w-0">
+            <span className="text-sm shrink-0">{expanded ? "📂" : "📁"}</span>
+            <span className="text-sm text-gray-200 truncate flex-1 text-left">{item.name}</span>
+            {item.child_count !== undefined && (
+              <span className="text-xs text-gray-600 shrink-0">{item.child_count} items</span>
+            )}
+            {item.loading && <Loader2 size={11} className="animate-spin text-brand-400 shrink-0" />}
+          </button>
+          {/* "Ingest folder" button */}
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelectFolder(item); }}
+            className="text-xs text-brand-400 hover:text-brand-300 border border-brand-500/30 hover:border-brand-400/50 px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-all shrink-0"
+            title="Ingest entire folder"
+          >
+            Upload folder
+          </button>
+        </div>
+        {expanded && item.children && (
+          <div>
+            {item.children.length === 0 ? (
+              <p className="text-xs text-gray-600 italic py-1" style={{ paddingLeft: `${24 + indent}px` }}>Empty folder</p>
+            ) : (
+              item.children.map(child => (
+                <FolderNode
+                  key={child.id}
+                  item={child}
+                  depth={depth + 1}
+                  siteUrl={siteUrl}
+                  libraryName={libraryName}
+                  selectedIds={selectedIds}
+                  onToggleFile={onToggleFile}
+                  onSelectFolder={onSelectFolder}
+                  onLoadChildren={onLoadChildren}
+                />
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // File row
+  const supported = SUPPORTED_EXTS.has(item.ext || "");
+  const checked = selectedIds.has(item.id);
+  return (
+    <div
+      className={`flex items-center gap-2 py-1.5 px-2 rounded-lg ${supported ? "hover:bg-white/5 cursor-pointer" : "opacity-40 cursor-not-allowed"} ${checked ? "bg-brand-600/10 border border-brand-500/20" : ""}`}
+      style={{ paddingLeft: `${8 + indent}px` }}
+      onClick={() => supported && onToggleFile(item)}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={!supported}
+        onChange={() => supported && onToggleFile(item)}
+        onClick={e => e.stopPropagation()}
+        className="w-3.5 h-3.5 accent-brand-500 shrink-0 cursor-pointer"
+      />
+      <span className="text-sm shrink-0">{fileIcon(item.ext || "")}</span>
+      <span className="text-sm text-gray-200 truncate flex-1">{item.name}</span>
+      {item.size !== undefined && (
+        <span className="text-xs text-gray-600 shrink-0">{formatSize(item.size)}</span>
+      )}
+      {!supported && (
+        <span className="text-xs text-gray-600 shrink-0">unsupported</span>
+      )}
+    </div>
+  );
+}
+
+// ── SharePoint Connector ──────────────────────────────────────────────────────
+function SharePointConnector({ onNavigateToAdmin }: { onNavigateToAdmin?: () => void }) {
   const [siteUrl, setSiteUrl] = useState("");
   const [connected, setConnected] = useState(false);
   const [siteDisplayName, setSiteDisplayName] = useState("");
   const [libraries, setLibraries] = useState<{ id: string; name: string }[]>([]);
   const [selectedLibrary, setSelectedLibrary] = useState("Shared Documents");
-  const [folderPath, setFolderPath] = useState("");
-  const [recursive, setRecursive] = useState(true);
-  const [fileTypes, setFileTypes] = useState("");
   const [testing, setTesting] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
+  const [treeItems, setTreeItems] = useState<SPItem[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedItems, setSelectedItems] = useState<SPItem[]>([]);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
 
-  const authHeaders = () => {
-    const token = localStorage.getItem("accessToken");
-    return { Authorization: `Bearer ${token}` };
-  };
+  const authHeaders = () => ({
+    Authorization: `Bearer ${localStorage.getItem("accessToken")}`,
+  });
 
   async function testConnection() {
-    if (!siteUrl.trim()) { setError("Site URL is required."); return; }
-    setError(""); setConnected(false); setLibraries([]); setTesting(true);
+    if (!siteUrl.trim()) { setError("SharePoint Site URL is required."); return; }
+    setError(""); setConnected(false); setLibraries([]); setTreeItems([]); setTesting(true);
     try {
       const res = await axios.post("/admin/sharepoint/test",
         { site_url: siteUrl, library_name: selectedLibrary },
@@ -229,129 +369,295 @@ function SharePointConnector() {
       if (libs.length > 0) setSelectedLibrary(libs[0].name);
       setConnected(true);
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Connection failed. Check Site URL and server .env credentials.");
+      setError(err.response?.data?.detail || "Connection failed. Check your Site URL and .env credentials.");
     } finally {
       setTesting(false);
     }
   }
 
-  async function ingest() {
+  async function browseRoot(library?: string) {
+    setBrowsing(true); setError(""); setTreeItems([]);
+    const lib = library || selectedLibrary;
+    try {
+      const res = await axios.post("/admin/sharepoint/browse",
+        { site_url: siteUrl, library_name: lib },
+        { headers: authHeaders() }
+      );
+      setTreeItems((res.data.items || []).map((it: any) => ({
+        ...it,
+        children: it.type === "folder" ? null : undefined,
+      })));
+    } catch (err: any) {
+      setError(err.response?.data?.detail || "Failed to browse files.");
+    } finally {
+      setBrowsing(false);
+    }
+  }
+
+  async function loadChildren(item: SPItem) {
+    // Mark as loading
+    setTreeItems(prev => markLoading(prev, item.id, true));
+    try {
+      const res = await axios.post("/admin/sharepoint/browse",
+        { site_url: siteUrl, library_name: selectedLibrary, item_id: item.id },
+        { headers: authHeaders() }
+      );
+      const children: SPItem[] = (res.data.items || []).map((it: any) => ({
+        ...it,
+        children: it.type === "folder" ? null : undefined,
+      }));
+      setTreeItems(prev => insertChildren(prev, item.id, children));
+    } catch (err: any) {
+      setError(`Failed to load folder "${item.name}": ${err.response?.data?.detail || err.message}`);
+      setTreeItems(prev => markLoading(prev, item.id, false));
+    }
+  }
+
+  function markLoading(items: SPItem[], id: string, loading: boolean): SPItem[] {
+    return items.map(it => {
+      if (it.id === id) return { ...it, loading };
+      if (it.children) return { ...it, children: markLoading(it.children, id, loading) };
+      return it;
+    });
+  }
+
+  function insertChildren(items: SPItem[], parentId: string, children: SPItem[]): SPItem[] {
+    return items.map(it => {
+      if (it.id === parentId) return { ...it, children, loading: false };
+      if (it.children) return { ...it, children: insertChildren(it.children, parentId, children) };
+      return it;
+    });
+  }
+
+  function toggleFile(item: SPItem) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
+      return next;
+    });
+    setSelectedItems(prev => {
+      if (prev.find(x => x.id === item.id)) return prev.filter(x => x.id !== item.id);
+      return [...prev, item];
+    });
+    setResult(null);
+  }
+
+  // Collect all files recursively from a subtree
+  function collectFiles(items: SPItem[]): SPItem[] {
+    const files: SPItem[] = [];
+    for (const it of items) {
+      if (it.type === "file" && SUPPORTED_EXTS.has(it.ext || "")) files.push(it);
+      if (it.children) files.push(...collectFiles(it.children));
+    }
+    return files;
+  }
+
+  async function selectFolderForIngest(folder: SPItem) {
+    // Load all children recursively (up to 2 levels) and select all files
+    let items = folder.children;
+    if (!items) {
+      try {
+        const res = await axios.post("/admin/sharepoint/browse",
+          { site_url: siteUrl, library_name: selectedLibrary, item_id: folder.id },
+          { headers: authHeaders() }
+        );
+        items = (res.data.items || []).map((it: any) => ({
+          ...it, children: it.type === "folder" ? null : undefined,
+        }));
+        setTreeItems(prev => insertChildren(prev, folder.id, items!));
+      } catch { return; }
+    }
+    const files = collectFiles(items || []);
+    setSelectedIds(prev => { const n = new Set(prev); files.forEach(f => n.add(f.id)); return n; });
+    setSelectedItems(prev => {
+      const existing = new Set(prev.map(x => x.id));
+      return [...prev, ...files.filter(f => !existing.has(f.id))];
+    });
+  }
+
+  async function ingestSelected() {
+    if (selectedItems.length === 0) return;
     setError(""); setResult(null); setRunning(true);
     try {
-      const res = await axios.post("/admin/sharepoint/ingest", {
+      const res = await axios.post("/admin/sharepoint/ingest/items", {
         site_url: siteUrl,
         library_name: selectedLibrary,
-        folder_path: folderPath,
-        recursive,
-        file_types: fileTypes.split(",").map(s => s.trim()).filter(Boolean),
+        items: selectedItems.map(it => ({ id: it.id, name: it.name, downloadUrl: it.downloadUrl || "" })),
       }, { headers: authHeaders() });
       setResult(res.data);
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Ingestion failed.");
+      setError(err.response?.data?.detail || "Ingestion failed. Check server logs.");
     } finally {
       setRunning(false);
     }
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-bold text-white">SharePoint Connector</h2>
+        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+          <Cloud size={18} className="text-brand-400" /> SharePoint File Browser
+        </h2>
         <p className="text-sm text-gray-400 mt-1">
-          Connect via Microsoft Graph API — credentials are configured server-side in <code className="text-brand-300 bg-gray-900 px-1 rounded">.env</code>. No password needed here.
+          Credentials configured server-side in <code className="text-brand-300 bg-gray-900/60 px-1 rounded text-xs">.env</code> — no passwords needed here.
         </p>
       </div>
 
-      {/* Step 1 — Site URL + Test Connection */}
-      <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4">
-        <p className="text-sm font-semibold text-white flex items-center gap-2">
-          <Cloud size={15} className="text-brand-400" /> Step 1 — Connect to Site
+      {/* Step 1 — Connect */}
+      <div className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+          <span className="w-5 h-5 rounded-full bg-brand-600/30 text-brand-300 flex items-center justify-center text-xs font-bold">1</span>
+          Connect to Site
         </p>
-        <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1">SharePoint Site URL</label>
-          <input value={siteUrl} onChange={e => { setSiteUrl(e.target.value); setConnected(false); }}
-            placeholder="https://yourcompany.sharepoint.com/sites/YourSite"
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition" />
+        <div className="flex gap-2">
+          <input
+            value={siteUrl}
+            onChange={e => { setSiteUrl(e.target.value); setConnected(false); setTreeItems([]); }}
+            placeholder="https://company.sharepoint.com/sites/SiteName"
+            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 transition"
+          />
+          <button
+            onClick={testConnection}
+            disabled={testing}
+            className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm rounded-lg transition font-medium shrink-0"
+          >
+            {testing ? <><Loader2 size={13} className="animate-spin" /> Testing…</> : <><Play size={13} /> Connect</>}
+          </button>
         </div>
+
         {error && (
-          <div className="flex gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
-            <AlertCircle size={15} className="shrink-0 mt-0.5" /> {error}
+          <div className="flex gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-300">
+            <AlertCircle size={15} className="shrink-0 mt-0.5" />
+            <span className="text-xs leading-relaxed">{error}</span>
           </div>
         )}
+
         {connected && (
-          <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-sm text-emerald-300">
-            <CheckCircle size={15} className="shrink-0" /> Connected to <strong>{siteDisplayName}</strong>
+          <div className="flex items-center gap-2 p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-sm text-emerald-300">
+            <CheckCircle size={14} className="shrink-0" />
+            Connected to <strong>{siteDisplayName}</strong>
           </div>
         )}
-        <button onClick={testConnection} disabled={testing}
-          className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm rounded-lg transition">
-          {testing ? <><Loader2 size={13} className="animate-spin" /> Testing…</> : <><Play size={13} /> Test Connection</>}
-        </button>
       </div>
 
-      {/* Step 2 — Library + folder config (shown after connect) */}
+      {/* Step 2 — Browse & Select */}
       {connected && (
-        <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4">
-          <p className="text-sm font-semibold text-white flex items-center gap-2">
-            <FolderOpen size={15} className="text-brand-400" /> Step 2 — Select Library &amp; Options
-          </p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">Document Library</label>
-              {libraries.length > 0 ? (
-                <select value={selectedLibrary} onChange={e => setSelectedLibrary(e.target.value)}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500">
+        <div className="bg-gray-800/60 border border-gray-700 rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+              <span className="w-5 h-5 rounded-full bg-brand-600/30 text-brand-300 flex items-center justify-center text-xs font-bold">2</span>
+              Browse &amp; Select Files
+            </p>
+            <div className="flex items-center gap-2">
+              {libraries.length > 0 && (
+                <select
+                  value={selectedLibrary}
+                  onChange={e => { setSelectedLibrary(e.target.value); browseRoot(e.target.value); }}
+                  className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-brand-500"
+                >
                   {libraries.map(l => <option key={l.id} value={l.name}>{l.name}</option>)}
                 </select>
-              ) : (
-                <input value={selectedLibrary} onChange={e => setSelectedLibrary(e.target.value)}
-                  placeholder="Shared Documents"
-                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-brand-500" />
               )}
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">Sub-folder (optional)</label>
-              <input value={folderPath} onChange={e => setFolderPath(e.target.value)}
-                placeholder="Contracts/2024"
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">File Types (comma-separated, empty = all)</label>
-              <input value={fileTypes} onChange={e => setFileTypes(e.target.value)}
-                placeholder="pdf, docx, txt"
-                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500" />
-            </div>
-            <div className="flex items-center gap-3 pt-5">
-              <input type="checkbox" id="sp-recursive" checked={recursive}
-                onChange={e => setRecursive(e.target.checked)}
-                className="w-4 h-4 accent-brand-500" />
-              <label htmlFor="sp-recursive" className="text-sm text-gray-300 cursor-pointer">Traverse sub-folders recursively</label>
+              <button
+                onClick={() => browseRoot()}
+                disabled={browsing}
+                className="flex items-center gap-1.5 text-xs text-brand-400 hover:text-brand-300 border border-brand-500/30 hover:border-brand-400 px-3 py-1.5 rounded-lg transition"
+              >
+                {browsing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                {treeItems.length === 0 ? "Load files" : "Refresh"}
+              </button>
             </div>
           </div>
-          <button onClick={ingest} disabled={running}
-            className="w-full flex items-center justify-center gap-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg transition text-sm">
-            {running ? <><Loader2 size={15} className="animate-spin" /> Ingesting…</> : <><Play size={15} /> Connect &amp; Ingest Files</>}
-          </button>
+
+          {/* File tree */}
+          {treeItems.length > 0 ? (
+            <div className="bg-gray-900/60 border border-gray-700/60 rounded-xl overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700/60 bg-gray-900/40">
+                <span className="text-xs text-gray-500">{treeItems.length} items at root level</span>
+                <div className="flex items-center gap-3">
+                  {selectedIds.size > 0 && (
+                    <span className="text-xs text-brand-400 font-medium">{selectedIds.size} file{selectedIds.size !== 1 ? "s" : ""} selected</span>
+                  )}
+                  <button
+                    onClick={() => { setSelectedIds(new Set()); setSelectedItems([]); }}
+                    className="text-xs text-gray-600 hover:text-gray-400 transition"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              {/* Tree */}
+              <div className="max-h-80 overflow-y-auto p-2 space-y-0.5">
+                {treeItems.map(item => (
+                  <FolderNode
+                    key={item.id}
+                    item={item}
+                    depth={0}
+                    siteUrl={siteUrl}
+                    libraryName={selectedLibrary}
+                    selectedIds={selectedIds}
+                    onToggleFile={toggleFile}
+                    onSelectFolder={selectFolderForIngest}
+                    onLoadChildren={loadChildren}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : browsing ? (
+            <div className="flex items-center justify-center py-10 text-gray-500 text-sm gap-2">
+              <Loader2 size={16} className="animate-spin" /> Loading files from SharePoint…
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <FolderOpen size={28} className="text-gray-700 mb-2" />
+              <p className="text-sm text-gray-500">Click "Load files" to browse your SharePoint library</p>
+            </div>
+          )}
+
+          {/* Ingest button */}
+          {selectedIds.size > 0 && (
+            <button
+              onClick={ingestSelected}
+              disabled={running}
+              className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-brand-600 to-violet-600 hover:from-brand-500 hover:to-violet-500 disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition text-sm shadow-lg shadow-brand-900/30"
+            >
+              {running
+                ? <><Loader2 size={15} className="animate-spin" /> Ingesting {selectedIds.size} file{selectedIds.size !== 1 ? "s" : ""}…</>
+                : <><Play size={15} /> Ingest {selectedIds.size} selected file{selectedIds.size !== 1 ? "s" : ""}</>}
+            </button>
+          )}
         </div>
       )}
 
       {/* Result */}
       {result && (
-        <div className={`border rounded-xl p-5 ${result.errors === 0 ? "bg-emerald-500/5 border-emerald-500/20" : "bg-yellow-500/5 border-yellow-500/20"}`}>
-          <div className="flex items-center gap-2 mb-3">
-            {result.errors === 0
-              ? <CheckCircle size={16} className="text-emerald-400" />
-              : <AlertCircle size={16} className="text-yellow-400" />}
-            <p className="text-sm font-semibold text-white">Ingestion Complete</p>
+        <div className={`border rounded-xl p-4 ${result.errors === 0 ? "bg-emerald-500/5 border-emerald-500/20" : "bg-amber-500/5 border-amber-500/20"}`}>
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2">
+              {result.errors === 0
+                ? <CheckCircle size={16} className="text-emerald-400" />
+                : <AlertCircle size={16} className="text-amber-400" />}
+              <p className="text-sm font-semibold text-white">Ingestion Queued</p>
+            </div>
+            {onNavigateToAdmin && (
+              <button
+                onClick={onNavigateToAdmin}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-brand-600/20 hover:bg-brand-600/40 border border-brand-500/30 text-brand-300 rounded-lg transition font-medium shrink-0"
+              >
+                View Chunks in Admin Panel →
+              </button>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3 mb-3">
-            <div className="bg-gray-800 rounded-lg px-3 py-2 text-center">
+            <div className="bg-gray-800/80 rounded-lg px-3 py-2.5 text-center">
               <p className="text-2xl font-bold text-emerald-400">{result.ingested}</p>
-              <p className="text-xs text-gray-400">Files Ingested</p>
+              <p className="text-xs text-gray-400 mt-0.5">Files Ingested</p>
             </div>
-            <div className="bg-gray-800 rounded-lg px-3 py-2 text-center">
+            <div className="bg-gray-800/80 rounded-lg px-3 py-2.5 text-center">
               <p className="text-2xl font-bold text-red-400">{result.errors}</p>
-              <p className="text-xs text-gray-400">Errors</p>
+              <p className="text-xs text-gray-400 mt-0.5">Errors</p>
             </div>
           </div>
           {result.files?.length > 0 && (
@@ -366,27 +672,27 @@ function SharePointConnector() {
           )}
           {result.error_details?.length > 0 && (
             <div className="mt-3 space-y-1">
-              <p className="text-xs font-medium text-red-400">Errors:</p>
+              <p className="text-xs font-semibold text-red-400 mb-1">Errors:</p>
               {result.error_details.map((e: any, i: number) => (
-                <div key={i} className="text-xs text-gray-400">✗ {e.file}: {e.error}</div>
+                <div key={i} className="text-xs text-gray-400 bg-red-500/5 rounded px-2 py-1">✗ {e.file}: {e.error}</div>
               ))}
             </div>
           )}
         </div>
       )}
 
-      {/* Info box */}
-      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
-        <p className="text-xs font-medium text-gray-300 mb-2">How authentication works</p>
-        <div className="space-y-1.5 text-xs text-gray-400">
+      {/* Auth info */}
+      <div className="bg-gray-900/40 border border-gray-800 rounded-xl p-3">
+        <p className="text-xs font-medium text-gray-400 mb-2">How it works</p>
+        <div className="space-y-1 text-xs text-gray-600">
           {[
-            "Azure AD app registration authenticates using client_credentials (no user login)",
-            "SHAREPOINT_TENANT_ID, CLIENT_ID, CLIENT_SECRET are set in server .env",
-            "The app needs Sites.Read.All and Files.Read.All Graph API permissions",
-            "Files are downloaded, chunked, embedded in Qdrant and linked in the knowledge graph",
+            "Azure AD app uses client_credentials — no user sign-in required",
+            "Set SHAREPOINT_TENANT_ID, CLIENT_ID, CLIENT_SECRET in server .env",
+            "App needs Sites.Read.All and Files.Read.All permissions",
+            "Files are chunked, embedded in Qdrant and linked in the knowledge graph",
           ].map((s, i) => (
             <div key={i} className="flex items-start gap-2">
-              <span className="text-brand-400 font-bold shrink-0">{i + 1}.</span> {s}
+              <span className="text-brand-600 font-bold shrink-0">{i + 1}.</span> {s}
             </div>
           ))}
         </div>
@@ -580,7 +886,7 @@ function FolderUpload() {
   );
 }
 
-export default function DocumentUpload() {
+export default function DocumentUpload({ onNavigateToAdmin }: { onNavigateToAdmin?: () => void }) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [dragging, setDragging] = useState(false);
   const [activeTab, setActiveTab] = useState<"files" | "folder" | "sharepoint" | "etl">("files");
@@ -674,7 +980,6 @@ export default function DocumentUpload() {
           { id: "files", label: "Local Files" },
           { id: "folder", label: "Folder Upload" },
           { id: "sharepoint", label: "SharePoint" },
-          { id: "etl", label: "ETL Pipeline" },
         ].map(({ id, label }) => (
           <button key={id} onClick={() => setActiveTab(id as any)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 transition -mb-px ${
@@ -760,94 +1065,8 @@ export default function DocumentUpload() {
         {activeTab === "folder" && <FolderUpload />}
 
         {/* ── SHAREPOINT ── */}
-        {activeTab === "sharepoint" && <SharePointConnector />}
+        {activeTab === "sharepoint" && <SharePointConnector onNavigateToAdmin={onNavigateToAdmin} />}
 
-        {/* ── ETL PIPELINE ── */}
-        {activeTab === "etl" && (
-          <>
-            <div>
-              <h2 className="text-lg font-bold text-white">ETL Pipeline</h2>
-              <p className="text-sm text-gray-400 mt-1">
-                Full document ingestion pipeline — from raw file to searchable vector + knowledge graph.
-                All steps run asynchronously in the background after upload.
-              </p>
-            </div>
-
-            {/* Architecture overview badge row */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: "Vector Store", value: "Qdrant", color: "text-blue-400 bg-blue-500/10 border-blue-500/20" },
-                { label: "Graph DB", value: "SQLite (Neo4j fallback)", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
-                { label: "LLM", value: "Cohere command-r7b", color: "text-yellow-400 bg-yellow-500/10 border-yellow-500/20" },
-              ].map(({ label, value, color }) => (
-                <div key={label} className={`border rounded-xl p-3 text-center ${color}`}>
-                  <p className="text-xs font-bold">{value}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">{label}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="space-y-4">
-              {[
-                {
-                  step: "1", icon: Upload, title: "Async File Ingest Queue",
-                  desc: "Files are accepted instantly and queued for background processing. The upload returns immediately — no waiting for ingestion.",
-                  badge: "Non-blocking",
-                },
-                {
-                  step: "2", icon: FileText, title: "Parse & Chunk",
-                  desc: "Documents are parsed (PDF, DOCX, TXT, CSV, JSON, HTML, PPTX, XML, MD) and split into semantic chunks of ~512 tokens with overlap.",
-                  badge: "Active",
-                },
-                {
-                  step: "3", icon: Brain, title: "Embedding (BAAI/bge-large-en-v1.5)",
-                  desc: "Each chunk is embedded using a 1024-dim sentence transformer model. Batch embedding via batch_embed() for 10x throughput.",
-                  badge: "Active",
-                },
-                {
-                  step: "4", icon: Database, title: "Vector Store — Qdrant",
-                  desc: "Embeddings with metadata (filename, access_roles, document_type) are upserted into Qdrant collections for cosine similarity search.",
-                  badge: "Active",
-                },
-                {
-                  step: "5", icon: Brain, title: "NER — Named Entity Recognition",
-                  desc: "spaCy extracts PERSON, ORG, DATE, MONEY, and CONTRACT entities. Cohere LLM classifies document type and sensitivity.",
-                  badge: "Active",
-                },
-                {
-                  step: "6", icon: Link2, title: "Relationship Extraction",
-                  desc: "Regex + pattern rules detect relationships: CONTRACT→issued_by→ORG, DOCUMENT→starts_on→DATE, PARTY→signs→CONTRACT.",
-                  badge: "Active",
-                },
-                {
-                  step: "7", icon: GitBranch, title: "Graph Storage — SQLite / Neo4j",
-                  desc: "Entities and relationships stored in SQLite graph DB (primary). Neo4j used automatically when available at bolt://localhost:7687.",
-                  badge: "Active",
-                },
-                {
-                  step: "8", icon: CheckCircle, title: "Cache Warm & Ready",
-                  desc: "After ingestion, the in-memory TTL cache is primed. Subsequent identical queries are answered instantly from cache.",
-                  badge: "Active",
-                },
-              ].map(({ step, icon: Icon, title, desc, badge }) => (
-                <div key={step} className="flex gap-4">
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 bg-brand-600/20 text-brand-300 border border-brand-500/30">{step}</div>
-                  <div className="flex-1 pb-4 border-b border-gray-800 last:border-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Icon size={15} className="text-brand-400" />
-                      <p className="text-sm font-medium text-white">{title}</p>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">{badge}</span>
-                    </div>
-                    <p className="text-xs text-gray-400 leading-relaxed">{desc}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Ingest queue status */}
-            <IngestQueueStatus />
-          </>
-        )}
       </div>
     </div>
   );
