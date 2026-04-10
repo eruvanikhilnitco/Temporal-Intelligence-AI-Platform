@@ -8,6 +8,8 @@ __pycache__/
 
 # Runtime data
 cortexflow.db
+cortexflow.db-shm
+cortexflow.db-wal
 uploaded_docs/
 logs/
 
