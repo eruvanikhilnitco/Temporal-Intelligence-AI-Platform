@@ -5,6 +5,100 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [6.0.2] — 2026-04-13
+
+### Added
+- `app/api/admin_routes.py` — new `GET /admin/ingest-jobs` endpoint: returns active, queued, and recently-completed ingest jobs with filename, status, elapsed time, error, and SharePoint source flag
+- `frontend/src/components/AdminPanel.tsx` — **Ingestion Status panel** now shown at the top of the Chunks tab; shows live "in progress" banner for active SharePoint or upload ingestion with 4-second auto-refresh; source badge distinguishes SharePoint vs manual upload
+
+### Fixed
+- `services/document_reader.py` — **critical wrong-document bug**: DocumentReader only looked in `uploaded_docs/` for file name candidates; SharePoint-ingested files (e.g. `HR Policy Manual-v2.1.pdf`) are stored in Qdrant but not locally, so the fuzzy matcher fell back to `ai_policy.txt` (only shared word: "policy"); fixed by fetching all unique `file_name` values from Qdrant and including them in the candidate list
+- `services/document_reader.py` — **false-positive filename matching**: single-word overlap (score 1/1) was accepted as a match; now requires ≥2 words to match OR a minimum score of 0.4, preventing `ai_policy` from matching queries about `HR Policy Manual`
+- `services/document_reader.py` — **Qdrant-sourced file reading**: added `_read_from_qdrant(filename)` which reconstructs document text by joining Qdrant chunks sorted by `chunk_id`/`char_start`; enables reading exact lines and full content from SharePoint-ingested PDFs that have no local file copy
+- `services/agent_orchestrator.py` — query rewriter now skips rewriting for explicit document-read queries (line number or full-doc patterns detected); prevents LLM rewriting from corrupting verbatim line-read requests before they reach DocumentLineReaderTool
+- `services/ingest_queue.py` — `submit()` now stores `original_filename` in `_results` dict so the admin ingest-jobs endpoint can show human-readable file names instead of temp paths
+
+---
+
+## [6.0.1] — 2026-04-13
+
+### Fixed
+- `services/hybrid_search.py` — **critical**: Qdrant client v1.x removed `.search()`; replaced with `.query_points()` using `response.points` accessor; vector search was silently falling back to pure vector on every query
+- `services/chatbot_service.py` — same Qdrant API fix: `.search()` → `.query_points()` in document-lookup path
+- `services/hybrid_search.py` — `_vector_search` was calling `embedder.embed_query()` which does not exist; fixed to `embedder.embed()` (the correct method on `EmbeddingService`)
+- `services/agent_orchestrator.py` — `_fetch_payload_map` was using `embedder.collection_name` (`documents`) instead of `phase1_documents`; sources were always empty because payload fetch returned nothing; fixed to use `self._phase1_rag.collection_name`
+
+---
+
+## [6.0.0] — 2026-04-13
+
+### Added
+- `services/hybrid_search.py` — **new** HybridSearchService: BM25 (rank_bm25) + Qdrant vector search fused via Reciprocal Rank Fusion (0.65 vector + 0.35 BM25); BM25 index built lazily from Qdrant payload, auto-refreshes when collection grows >5%; falls back to pure vector if BM25 unavailable
+- `services/context_builder.py` — **new** CoverageAwareContextBuilder: Jaccard deduplication (>85% similarity threshold), diversity enforcement (max 2 chunks per source file), extractive compression (key-sentence selection per chunk), hard 8000-char budget with per-chunk allocation
+- `services/phase1_llm.py` — `rewrite_query()` method: LLM-based query expansion via Cohere with 5-second timeout; rewrites ambiguous short queries into retrieval-friendly intent-aware queries before Stage 1 retrieval
+- `frontend/src/api/client.ts` — global axios 401 interceptor covering both the `api` instance and raw `axios` calls; clears localStorage and dispatches `session-expired` event on any 401 response
+- `frontend/src/App.tsx` — `session-expired` event handler: redirects to login page and shows red "Your session expired. Please log in again." banner for 5 seconds
+
+### Changed
+- `services/agent_orchestrator.py` — full pipeline rewrite: (0) greeting fast-path, (1) cache, (2) query rewriting, (3) intent classify, (4) hybrid BM25+vector retrieval with parallel sub-queries, (5) graph boost secondary signal, (6) cross-encoder rerank to Top-10, (7) coverage-aware context build, (8) LLM generation; Stage-1 K raised from 15→25 per sub-query
+- `services/reranker.py` — reranker upgraded from MiniLM-L-6 to `cross-encoder/ms-marco-MiniLM-L-12-v2` (stronger quality, same memory footprint); top-k raised from 5→10; batch_size 8 (CPU) or 16 (GPU); chunk truncation at 600 chars
+- `core/config.py` — chunk_token_size 450→500, chunk_token_overlap 64→100; reranker_model set to `cross-encoder/ms-marco-MiniLM-L-12-v2`
+- `app/core/security.py` — JWT access token expiry extended from 24 hours → 7 days; eliminates the "Invalid or expired token" error on SharePoint and other admin endpoints for regular users
+
+### Fixed
+- **SharePoint "Invalid or expired token"** — was a JWT session expiry issue (24h limit); fixed by extending to 7 days and adding auto-logout interceptor so users see a clear message instead of a cryptic error
+
+---
+
+## [5.6.0] — 2026-04-13
+
+### Fixed
+- `services/phase1_llm.py` — **critical chat fix**: was using `cohere.Client` (SDK v4 API) with removed model `command-r-plus`; now uses `cohere.ClientV2` (SDK v5), correct `messages=[...]` array format, model `command-r7b-12-2024`, and a hard 25-second `RequestOptions(timeout_in_seconds=25)` to prevent infinite hang
+- `services/reranker.py` — cross-encoder was scoring 50 full-text candidate pairs against `BAAI/bge-reranker-large` on CPU, causing >120 s stalls; added `_MAX_CHUNK_CHARS=512` truncation on pairs and `batch_size=8, show_progress_bar=False` on `predict()`
+- `services/agent_orchestrator.py` — Stage 1 candidate count reduced from 50 → 15; eliminates the root cause of reranker CPU overload while keeping quality (top-5 result unchanged)
+- `services/agent_orchestrator.py` — `_source_name` was doing a full Qdrant scroll (200 records) once per chunk = 5 separate scans per query; replaced with a single `_fetch_payload_map()` call shared across `_node_retrieve` and `_node_fuse_context`
+- `services/document_parser.py` — removed Apache Tika / JVM for all common formats; pure-Python extractors (`pypdf`, `python-docx`, `python-pptx`, `openpyxl`) used instead; Tika kept only as last resort for unknown binary formats; eliminates 30-second upload block on every file
+- `app/api/admin_routes.py` — analytics was executing 43 sequential SQLite queries per page load (14 daily + 24 hourly + 5 aggregates); replaced with 5 batched queries using `GROUP BY` and aggregate functions
+- `app/api/admin_routes.py` — `GraphService` was instantiated fresh on every `/admin/graph` call, triggering a 2-second Neo4j connection timeout each time; replaced with module-level singleton `_graph_service_cache`
+- `core/config.py` — `max_upload_size` raised to 500 MB; `cohere_model` fixed to `command-r7b-12-2024`
+
+---
+
+## [5.5.1] — 2026-04-10
+
+### Fixed
+- `core/config.py` — reverted `cohere_model` from `command-r-plus` (removed by Cohere Sept 2025) back to `command-r7b-12-2024`; chat now works again
+- `services/sharepoint_service.py` — critical bug: deltaLink was saved BEFORE processing items, so any failed ingest permanently skipped those files; moved `_save_delta_token` call to AFTER the item loop so failed files are retried on the next cycle
+- `services/sharepoint_service.py` — startup race condition: delta sync fired 15 s after startup but embedding models take ~90 s to load from disk, causing "RAG unavailable" on every file; increased startup delay to 90 s and added a 120 s in-sync wait-for-RAG loop in `_queue_file_for_ingest`
+- `services/sharepoint_service.py` — temp file used original filename in a dedicated `mkdtemp` dir so `ingest_file` stores the real document name (`HR Policy Manual-v2.1.pdf`) in Qdrant instead of the random temp name
+- `services/sharepoint_service.py` — `_mark_file_error` wrapped in try/except so DB errors during error recording are logged rather than silently swallowed
+- `services/phase1_pipeline.py` — added 400 k-char guard in `chunk_text_with_metadata` to route very large files through character-based chunking instead of crashing the tokenizer with a 462 k-token sequence
+
+---
+
+## [5.5.0] — 2026-04-10
+
+### Added
+- `services/sharepoint_service.py` — new event-driven SharePoint service: webhook registration, delta sync (MS Graph delta() API), atomic vector swap on update, rename detection via stable file_id, soft-delete on file removal, webhook renewal scheduler, resume-on-restart
+- `app/api/sharepoint_routes.py` — `POST /sharepoint/connect`, `POST /sharepoint/disconnect`, `GET /sharepoint/status`, `POST /sharepoint/webhook` (MS Graph push notifications), `GET /sharepoint/webhook` (validation handshake)
+- `app/models.py` — `SharePointConnection` table (connection registry, webhook subscription IDs, delta token, expiry) and `SharePointFile` table (per-file metadata registry: file_id, content_hash, version, indexed_status, line ranges)
+- `frontend/src/components/SharePoint.tsx` — minimal admin page: URL input + Connect button; shows active connections with file count, last sync time, and Disconnect button; nothing else
+- `core/config.py` — `reranker_model`, `chunk_token_size`, `chunk_token_overlap`, `sharepoint_notification_url`, `sharepoint_delta_sync_interval` settings; `sharepoint_tenant_id/client_id/client_secret` via env
+
+### Changed
+- `core/config.py` — `embedding_model` upgraded from `BAAI/bge-small-en-v1.5` (384-dim) to `BAAI/bge-large-en-v1.5` (1024-dim); `cohere_model` from `command-r7b-12-2024` to `command-r-plus`; `openai_model` from `gpt-4o-mini` to `gpt-4o`
+- `services/reranker.py` — model upgraded from `cross-encoder/ms-marco-MiniLM-L-6-v2` to `BAAI/bge-reranker-large`; added `rerank_with_scores()` method; added diversity filter (`MAX_PER_DOC=2` per source document in final top-k)
+- `services/phase1_pipeline.py` — replaced character-based chunker with token-aware chunker using `AutoTokenizer` from the embedding model (450 tokens / 64 overlap); outputs rich metadata per chunk: `chunk_id`, `line_start`, `line_end`, `char_start`, `char_end`, `token_count`; `chunk_text()` kept for backward compat
+- `app/services/rag_service.py` — `ingest_file()` now uses `chunk_text_with_metadata()`; stores `chunk_id`, `line_start`, `line_end`, `char_start`, `char_end`, `token_count`, `version`, `sharepoint_file_id`, `sharepoint_folder_path` in Qdrant payload
+- `services/agent_orchestrator.py` — context fusion enforces 80/20 vector/graph budget (6400/1600 chars); reranker called with `doc_names` for diversity filtering; `_extract_doc_names()` and `_source_name()` helpers for source attribution
+- `services/phase1_llm.py` — strict grounding prompts for both user and admin roles: answers must be grounded in context, inline source attribution required, explicit "not in documents" response when context is missing; temperature lowered to 0.1
+- `app/api/admin_routes.py` — removed all old SharePoint code (pull-based ingest, browse, test, ingest-items endpoints); replaced with comment pointing to sharepoint_routes.py
+- `app/main.py` — registers `sharepoint_router`; calls `_resume_sharepoint_connections()` on startup to resume delta sync for previously active connections; version bumped to v5.0
+- `frontend/src/pages/Dashboard.tsx` — added `"sharepoint"` to `View` type and `VIEW_LABELS`; renders `<SharePoint />` for admin users
+- `frontend/src/components/Sidebar.tsx` — added SharePoint nav item (Link2 icon) to admin nav
+
+---
+
 ## [5.4.1] — 2026-04-09
 
 ### Fixed

@@ -158,3 +158,54 @@ class Document(Base):
     ingested_by = Column(String, nullable=True)                # user_id or "api_key:{id}"
     last_updated = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SharePointConnection(Base):
+    """
+    Tracks an admin-established SharePoint site connection.
+    One row = one connected site. Stays active until admin disconnects.
+    """
+    __tablename__ = "sharepoint_connections"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    site_url = Column(String, nullable=False, index=True)       # full SharePoint site URL
+    site_id = Column(String, nullable=True)                     # resolved MS Graph site ID
+    site_display_name = Column(String, nullable=True)
+    status = Column(String, default="connected")                # connected | disconnected
+    # Webhook subscription IDs (one per drive, stored as JSON list)
+    webhook_subscription_ids = Column(JSON, default=list)
+    webhook_expiry = Column(DateTime, nullable=True)            # when subscriptions expire
+    # Delta sync change token (persisted so we resume from correct point after restart)
+    delta_token = Column(Text, nullable=True)
+    connected_by = Column(String, nullable=True)                # admin user_id
+    connected_at = Column(DateTime, default=datetime.utcnow)
+    disconnected_at = Column(DateTime, nullable=True)
+    last_sync_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+
+
+class SharePointFile(Base):
+    """
+    Metadata registry for every SharePoint file that has been ingested.
+    Used to detect new/modified/deleted files and skip unchanged files.
+
+    Primary key: sharepoint_file_id (stable MS Graph item ID — survives renames).
+    """
+    __tablename__ = "sharepoint_files"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    connection_id = Column(String, index=True, nullable=False)  # FK → sharepoint_connections.id
+    sharepoint_file_id = Column(String, nullable=False, index=True, unique=True)  # stable item ID
+    file_name = Column(String, nullable=False)
+    folder_path = Column(String, nullable=True)                 # /sites/Finance/Shared Docs/Q1/
+    drive_id = Column(String, nullable=True)
+    site_id = Column(String, nullable=True)
+    last_modified = Column(DateTime, nullable=True)             # from MS Graph lastModifiedDateTime
+    content_hash = Column(String, nullable=True)                # SHA-256 of downloaded bytes
+    version = Column(Integer, default=1)                        # increments on each update
+    indexed_status = Column(String, default="pending")          # pending | indexed | failed | deleted
+    chunk_count = Column(Integer, default=0)
+    file_size_bytes = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)

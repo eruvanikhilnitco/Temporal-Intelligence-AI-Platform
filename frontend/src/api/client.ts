@@ -2,6 +2,25 @@ import axios from "axios";
 
 const api = axios.create({ baseURL: "/" });
 
+// ── Global 401 interceptor ────────────────────────────────────────────────────
+// Catches expired-session responses from BOTH the `api` instance and raw `axios`
+// calls (used by SharePoint, Analytics, etc.) and forces a re-login.
+function _handle401() {
+  localStorage.removeItem("accessToken");
+  localStorage.removeItem("refreshToken");
+  window.dispatchEvent(new CustomEvent("session-expired"));
+}
+
+[api, axios].forEach(instance => {
+  instance.interceptors.response.use(
+    res => res,
+    err => {
+      if (err?.response?.status === 401) _handle401();
+      return Promise.reject(err);
+    }
+  );
+});
+
 export interface Message {
   id: string;
   role: "user" | "assistant";

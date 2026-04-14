@@ -13,6 +13,7 @@ export default defineConfig({
       "/admin": "http://localhost:8000",
       "/chat": "http://localhost:8000",
       "/feedback": "http://localhost:8000",
+      "/sharepoint": "http://localhost:8000",
     },
   },
 });

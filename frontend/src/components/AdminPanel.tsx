@@ -216,50 +216,92 @@ function ChunksTab({ chunks, loading, search, setSearch, onSearch, onRefresh }: 
 }
 
 // ── Ingest Queue Panel ────────────────────────────────────────────────────────
-function IngestQueuePanel({ authHeaders }: { authHeaders: () => Record<string, string> }) {
-  const [jobs, setJobs] = useState<any[]>([]);
+function IngestQueuePanel({ authHeaders, autoRefresh = false }: { authHeaders: () => Record<string, string>; autoRefresh?: boolean }) {
+  const [data, setData] = useState<any>({ active_count: 0, active: [], recent: [], total_processed: 0, total_errors: 0 });
   const [loading, setLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
-      const res = await axios.get("/upload/status/all", { headers: authHeaders() });
-      setJobs(Array.isArray(res.data) ? res.data.slice(0, 20) : []);
-    } catch { setJobs([]); }
+      const res = await axios.get("/admin/ingest-jobs", { headers: authHeaders() });
+      setData(res.data || {});
+    } catch { /* silently ignore */ }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    if (!autoRefresh) return;
+    // Poll every 4s when there are active jobs
+    const interval = setInterval(() => {
+      if (data.active_count > 0) load();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, data.active_count]);
 
   const badge: Record<string, string> = {
-    done: "bg-emerald-500/20 text-emerald-300",
-    processing: "bg-yellow-500/20 text-yellow-300 animate-pulse",
-    queued: "bg-blue-500/20 text-blue-300",
-    error: "bg-red-500/20 text-red-300",
+    done:       "bg-emerald-500/20 text-emerald-300 border border-emerald-500/20",
+    processing: "bg-yellow-500/20 text-yellow-300 border border-yellow-500/20 animate-pulse",
+    queued:     "bg-blue-500/20 text-blue-300 border border-blue-500/20",
+    error:      "bg-red-500/20 text-red-300 border border-red-500/20",
   };
+
+  const srcIcon = (j: any) => j.is_sharepoint ? "SP" : "↑";
+
+  const allJobs = [...(data.active || []), ...(data.recent || [])];
 
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="font-semibold text-white flex items-center gap-2">
-          <Activity size={15} className="text-brand-400" /> Background Ingest Queue
-        </h3>
+        <div>
+          <h3 className="font-semibold text-white flex items-center gap-2">
+            <Activity size={15} className="text-brand-400" /> Ingestion Status
+            {data.active_count > 0 && (
+              <span className="ml-1 text-xs font-bold px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 animate-pulse border border-yellow-500/30">
+                {data.active_count} in progress
+              </span>
+            )}
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {data.total_processed ?? 0} completed · {data.total_errors ?? 0} errors
+          </p>
+        </div>
         <button onClick={load} disabled={loading} className="p-1.5 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition">
           <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
-      {jobs.length === 0 ? (
-        <p className="text-sm text-gray-500">No recent jobs. Upload a file to see activity here.</p>
-      ) : (
-        <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-          {jobs.map((j: any) => (
+
+      {/* Active jobs first — prominent banner */}
+      {(data.active || []).map((j: any) => (
+        <div key={j.job_id} className="mb-3 flex items-center gap-3 bg-yellow-500/5 border border-yellow-500/20 rounded-xl px-4 py-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-yellow-200 font-medium truncate">{j.filename}</p>
+            <p className="text-xs text-gray-500">
+              {j.status === "processing" ? "Ingestion in progress…" : "Queued for ingestion"}
+              {j.is_sharepoint && <span className="ml-2 text-blue-400">· SharePoint</span>}
+            </p>
+          </div>
+          <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${badge[j.status] || ""}`}>
+            {j.status}
+          </span>
+        </div>
+      ))}
+
+      {/* Recent jobs */}
+      {allJobs.length === 0 ? (
+        <p className="text-sm text-gray-500">No recent ingestion activity. Upload a file or sync SharePoint to see jobs here.</p>
+      ) : (data.active || []).length === 0 && (
+        <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+          {(data.recent || []).map((j: any) => (
             <div key={j.job_id} className="flex items-center gap-3 bg-gray-900/50 rounded-lg px-3 py-2">
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${badge[j.status] || "bg-gray-600/30 text-gray-400"}`}>
                 {j.status}
               </span>
-              <span className="text-xs text-gray-300 flex-1 truncate">{j.file?.split("/").pop() || j.file || "—"}</span>
-              {j.elapsed_s != null && <span className="text-xs text-gray-500 shrink-0">{j.elapsed_s}s</span>}
-              {j.error && <span className="text-xs text-red-400 shrink-0 truncate max-w-[120px]" title={j.error}>{j.error}</span>}
+              <span className="text-xs text-gray-400 w-6 shrink-0 text-center">{srcIcon(j)}</span>
+              <span className="text-xs text-gray-300 flex-1 truncate">{j.filename}</span>
+              {j.elapsed_s != null && j.elapsed_s > 0 && <span className="text-xs text-gray-500 shrink-0">{j.elapsed_s}s</span>}
+              {j.error && <span className="text-xs text-red-400 shrink-0 truncate max-w-[120px]" title={j.error}>⚠ {j.error.slice(0, 40)}</span>}
             </div>
           ))}
         </div>
@@ -1320,14 +1362,18 @@ export default function AdminPanel({ user }: { user?: any }) {
 
         {/* ── CHUNKS (Qdrant) ── */}
         {tab === "chunks" && (
-          <ChunksTab
-            chunks={chunks}
-            loading={chunksLoading}
-            search={chunkSearch}
-            setSearch={setChunkSearch}
-            onSearch={() => fetchChunks(chunkSearch)}
-            onRefresh={() => fetchChunks(chunkSearch)}
-          />
+          <div className="space-y-5">
+            {/* Live ingestion status at the top */}
+            <IngestQueuePanel authHeaders={authHeaders} autoRefresh={true} />
+            <ChunksTab
+              chunks={chunks}
+              loading={chunksLoading}
+              search={chunkSearch}
+              setSearch={setChunkSearch}
+              onSearch={() => fetchChunks(chunkSearch)}
+              onRefresh={() => fetchChunks(chunkSearch)}
+            />
+          </div>
         )}
 
         {/* ── STORAGE INFO ── */}

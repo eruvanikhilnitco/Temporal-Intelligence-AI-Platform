@@ -20,8 +20,14 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
 
     # ---------------- MODELS ----------------
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_model: str = "BAAI/bge-large-en-v1.5"
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
     spacy_model: str = "en_core_web_sm"
+
+    # Token-based chunking — 500 tokens (enterprise quality), 100 overlap (strong continuity)
+    # BGE-large max context = 512 tokens; 500 leaves room for special tokens overhead
+    chunk_token_size: int = 500
+    chunk_token_overlap: int = 100
 
     # ---------------- API ----------------
     api_host: str = "0.0.0.0"
@@ -37,17 +43,24 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5174",
     ]
 
-    max_upload_size: int = 10 * 1024 * 1024
+    max_upload_size: int = 500 * 1024 * 1024  # 500 MB — no practical limit
     upload_dir: str = "./uploads"
 
     # ---------------- LLM CONFIG ----------------
 
     # OpenAI
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4o"
     openai_base_url: str = "https://api.openai.com/v1"
 
-    # Cohere (🔥 ADD THIS)
+    # SharePoint (Microsoft Graph API)
+    sharepoint_tenant_id: str = ""
+    sharepoint_client_id: str = ""
+    sharepoint_client_secret: str = ""
+    sharepoint_notification_url: str = ""   # Public HTTPS URL for webhooks (e.g. https://yourhost.com)
+    sharepoint_delta_sync_interval: int = 300  # seconds (5 min)
+
+    # Cohere
     cohere_api_key: Optional[str] = None
     cohere_model: str = "command-r7b-12-2024"
 

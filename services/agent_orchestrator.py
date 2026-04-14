@@ -1,25 +1,23 @@
 """
-Agent Orchestrator — LangGraph-style query routing pipeline.
+Agent Orchestrator — Enterprise RAG pipeline.
 
 Query Processing Pipeline:
-  1. User sends query via Chat UI
-  2. Query classifier categorizes query
-  3. Agent Orchestrator determines execution path
-  4. Retrieval modules execute:
-     - Vector RAG (DocumentSearchTool)
-     - Graph Query (GraphQueryTool)
-     - SQL Query  (SQLQueryTool)
-  5. Results are re-ranked
-  6. Context fusion combines all sources
-  7. Final prompt sent to LLM
-  8. Response streamed to UI
+  0. Greeting fast-path  (instant, no model)
+  1. Cache lookup        (TTL 600s)
+  2. Query rewriting     (LLM expansion for better recall)
+  3. Intent classify     (fact / summary / calculation / relationship)
+  4. Hybrid retrieval    (BM25 + vector, fused via RRF)
+  5. Graph boost         (optional +20% signal from knowledge graph)
+  6. Rerank              (cross-encoder, Top-K 50 → Top 10)
+  7. Context build       (diversity + dedup + extractive compression)
+  8. LLM generation      (grounded, source-attributed)
+  9. Post-process        (confidence gate, cache write)
 
 Agent Tools:
-  DocumentSearchTool → Vector DB retrieval (Qdrant)
-  GraphQueryTool     → Neo4j queries
-  SQLQueryTool       → PostgreSQL queries
-  SummarizationTool  → Summarize long context
-  CalculatorTool     → Arithmetic operations
+  HybridSearchTool  → BM25 + Qdrant vector search (fused)
+  GraphQueryTool    → Knowledge graph context boost
+  CalculatorTool    → Arithmetic in queries
+  SummarizationTool → Long context compression
 """
 
 import logging
@@ -152,6 +150,9 @@ class AgentState:
     tools_used: List[str] = field(default_factory=list)
     cache_hit: bool = False
     error: Optional[str] = None
+    _payload_map: Dict = field(default_factory=dict)        # internal: shared Qdrant lookup cache
+    _chunks_with_scores: List = field(default_factory=list)  # internal: (text, score) from retrieval
+    _rewritten_query: str = ""                               # internal: LLM-expanded query
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
@@ -178,6 +179,9 @@ class AgentOrchestrator:
         r"(\bcalculat|\bhow\s+much|\btotal|\bsum\b|\baverage|\bpercent|\d+\s*[\+\-\*\/])"
     )
 
+    # Top-K for Stage 1 retrieval (BM25 + vector each return this many candidates)
+    _STAGE1_K = 25   # 25 vector + 25 BM25 → ~30-40 unique after dedup → reranker → top 10
+
     def __init__(
         self,
         phase1_rag,
@@ -188,11 +192,9 @@ class AgentOrchestrator:
         classifier=None,
     ):
         self.rag = phase1_rag
-        # B2: Two-stage retrieval — fetch 50 candidates, reranker narrows to top-5
-        # tenant_id is passed at query time via _node_retrieve
         self._phase1_rag = phase1_rag
         self.doc_tool = DocumentSearchTool(
-            lambda q, role, tenant_id=None: phase1_rag.query(q, role, top_k=50, tenant_id=tenant_id)
+            lambda q, role, tenant_id=None: phase1_rag.query(q, role, top_k=self._STAGE1_K, tenant_id=tenant_id)
         )
         self.graph_tool = GraphQueryTool(graph_service) if graph_service else None
         self.summarizer = SummarizationTool()
@@ -201,6 +203,12 @@ class AgentOrchestrator:
         self.cache = cache_service or phase1_rag.cache
         self.reranker = reranker or phase1_rag.reranker
         self.classifier = classifier or phase1_rag.classifier
+
+        # Hybrid search (BM25 + vector fusion) — built lazily on first query
+        self._hybrid: Optional[Any] = None
+        # Coverage-aware context builder
+        from services.context_builder import get_context_builder
+        self._ctx_builder = get_context_builder()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -214,6 +222,16 @@ class AgentOrchestrator:
         state = AgentState(query=query, user_role=user_role, session_id=session_id,
                            tenant_id=tenant_id,
                            conversation_history=conversation_history or [])
+
+        # Fast-path: greetings never need retrieval or LLM
+        q_lower = query.lower().strip()
+        _GREETINGS = {"hello","hi","hey","good morning","good afternoon","good evening",
+                      "how are you","what's up","how do you do","nice to meet you"}
+        if any(q_lower == g or q_lower.startswith(g + " ") for g in _GREETINGS):
+            state.answer = self.llm.generate_answer(query, "", role=user_role)
+            state.confidence = 100.0
+            state.latency_ms = 0
+            return state
 
         # Cache key includes tenant_id so clients never see each other's cached results
         cache_key = f"{tenant_id or user_role}:{query}"
@@ -233,13 +251,16 @@ class AgentOrchestrator:
                 state.latency_ms = int((time.time() - t_start) * 1000)
                 return state
 
+        # Node 0: Query rewriting — expand short/ambiguous queries
+        state = self._node_rewrite_query(state)
+
         # Node 1: Classify
         state = self._node_classify(state)
 
-        # Node 2: Route to retrieval tools
+        # Node 2: Route to retrieval tools (hybrid BM25 + vector)
         state = self._node_retrieve(state)
 
-        # Node 3: Context fusion
+        # Node 3: Context fusion via coverage-aware context builder
         state = self._node_fuse_context(state)
 
         # Node 4: LLM generation
@@ -262,36 +283,83 @@ class AgentOrchestrator:
 
     # ── Pipeline nodes ────────────────────────────────────────────────────────
 
+    def _node_rewrite_query(self, state: AgentState) -> AgentState:
+        """
+        Expand/rewrite the query for better retrieval recall.
+        Skips rewriting for explicit document-read queries (line reads, full doc reads)
+        since those need to go verbatim to DocumentLineReaderTool.
+        """
+        try:
+            from services.document_reader import DOC_READ_INTENT, FULL_DOC_PATTERNS, LINE_NUMBER_PATTERNS
+            q = state.query
+            # Skip rewrite if this is a direct document/line read request
+            has_line = any(p.search(q) for p in LINE_NUMBER_PATTERNS)
+            has_full = bool(FULL_DOC_PATTERNS.search(q))
+            if has_line or has_full:
+                return state  # preserve verbatim query for DocumentLineReaderTool
+            rewritten = self.llm.rewrite_query(q)
+            if rewritten and rewritten != q:
+                state._rewritten_query = rewritten
+                logger.info("[Orchestrator] query rewritten")
+        except Exception:
+            pass
+        return state
+
     def _node_classify(self, state: AgentState) -> AgentState:
         """Determine query type and which tools are needed."""
         state.query_type = self.classifier.classify(state.query)
         state.needs_graph = bool(self.GRAPH_KEYWORDS.search(state.query))
         state.needs_calculator = bool(self.CALC_KEYWORDS.search(state.query))
         logger.info(
-            f"[Orchestrator] classify={state.query_type} "
-            f"graph={state.needs_graph} calc={state.needs_calculator}"
+            "[Orchestrator] classify=%s graph=%s calc=%s",
+            state.query_type, state.needs_graph, state.needs_calculator,
         )
         return state
 
     def _node_retrieve(self, state: AgentState) -> AgentState:
-        """Run retrieval tools — sub-queries and graph run in parallel threads."""
-        sub_queries = self._decompose(state.query)
-        all_chunks: List[str] = []
+        """
+        Hybrid retrieval: BM25 + vector (fused via RRF) for each sub-query,
+        then cross-encoder rerank to top 10.
+        Graph and calculator run in parallel threads.
+        """
+        retrieval_query = getattr(state, "_rewritten_query", None) or state.query
+        sub_queries = self._decompose(retrieval_query)
+        # Also include original query so rewrites don't drop verbatim matches
+        if state.query not in sub_queries:
+            sub_queries = [state.query] + sub_queries
 
-        # Dispatch all sub-queries + optional graph concurrently
+        all_chunks_with_scores: List[tuple] = []  # (text, score)
+        all_chunks_plain: List[str] = []
+
+        # ── Initialise hybrid search (lazy, once per orchestrator lifetime) ─
+        if self._hybrid is None:
+            try:
+                from services.hybrid_search import get_hybrid_search
+                self._hybrid = get_hybrid_search(self._phase1_rag.embedder)
+                # Point hybrid search at the correct collection (phase1_documents)
+                self._hybrid._collection_override = getattr(
+                    self._phase1_rag, "collection_name", "phase1_documents"
+                )
+            except Exception as e:
+                logger.warning("[Orchestrator] Hybrid search init failed: %s — using vector only", e)
+
         futures_map: Dict = {}
         with ThreadPoolExecutor(max_workers=6) as pool:
-            # One future per sub-query (primary + decomposed)
+            # Hybrid search per sub-query
+            _col = getattr(self._hybrid, "_collection_override", "phase1_documents") if self._hybrid else "phase1_documents"
             for sq in sub_queries:
-                f = pool.submit(self.doc_tool.run, sq, state.user_role, state.tenant_id)
-                futures_map[f] = ("doc", sq)
+                if self._hybrid:
+                    f = pool.submit(self._hybrid.search_with_scores, sq, self._STAGE1_K, _col)
+                    futures_map[f] = ("hybrid", sq)
+                else:
+                    f = pool.submit(self.doc_tool.run, sq, state.user_role, state.tenant_id)
+                    futures_map[f] = ("doc", sq)
 
-            # Graph lookup runs in the same pool
+            # Graph boost (secondary signal — 20-30% weight)
             if state.needs_graph and self.graph_tool:
                 f = pool.submit(self.graph_tool.run, state.query)
                 futures_map[f] = ("graph", state.query)
 
-            # Calculator is pure CPU — also parallel
             if state.needs_calculator:
                 f = pool.submit(self.calculator.run, state.query)
                 futures_map[f] = ("calc", state.query)
@@ -299,13 +367,18 @@ class AgentOrchestrator:
             for future in as_completed(futures_map):
                 kind, _ = futures_map[future]
                 try:
-                    result = future.result(timeout=10)
+                    result = future.result(timeout=15)
                 except Exception as exc:
-                    logger.warning("[Orchestrator] tool future error: %s", exc)
+                    logger.warning("[Orchestrator] tool timeout: %s", exc)
                     continue
 
-                if kind == "doc" and result.success and result.data:
-                    all_chunks.extend(result.data)
+                if kind == "hybrid":
+                    # result is List[Tuple[str, float]]
+                    if result:
+                        all_chunks_with_scores.extend(result)
+                elif kind == "doc" and result.success and result.data:
+                    for t in result.data:
+                        all_chunks_with_scores.append((t, 0.5))
                 elif kind == "graph" and result.success:
                     state.graph_context = result.data.get("context", "")
                     state.graph_entities = result.data.get("entities", {})
@@ -314,51 +387,74 @@ class AgentOrchestrator:
                     state.calculator_results = result.data
                     state.tools_used.append("CalculatorTool")
 
-        # Rerank deduplicated chunks (B2: candidates capped at 50 before reranking)
-        unique_chunks = list(dict.fromkeys(all_chunks))[:50]
-        if unique_chunks:
+        # Deduplicate while preserving best score
+        seen: Dict[str, float] = {}
+        for text, score in all_chunks_with_scores:
+            if text not in seen or score > seen[text]:
+                seen[text] = score
+        unique_chunks_scored = sorted(seen.items(), key=lambda x: x[1], reverse=True)
+        all_chunks_plain = [t for t, _ in unique_chunks_scored]
+
+        # ── Rerank top candidates with cross-encoder ──────────────────────
+        if all_chunks_plain:
             try:
+                state._payload_map = self._fetch_payload_map(limit=250)
+                doc_names = self._extract_doc_names(all_chunks_plain, state._payload_map)
+                # Rerank to top 10 (more than before — context builder will trim)
                 state.vector_results = self.reranker.rerank(
-                    state.query, unique_chunks, top_k=5
+                    retrieval_query, all_chunks_plain, top_k=10, doc_names=doc_names
                 )
-            except Exception:
-                state.vector_results = unique_chunks[:5]
-            state.tools_used.append("DocumentSearchTool")
+                # Attach scores for context builder
+                score_map = dict(unique_chunks_scored)
+                state._chunks_with_scores = [
+                    (t, score_map.get(t, 0.5)) for t in state.vector_results
+                ]
+            except Exception as e:
+                logger.warning("[Orchestrator] Rerank failed: %s", e)
+                state._payload_map = {}
+                state.vector_results = all_chunks_plain[:10]
+                state._chunks_with_scores = [(t, 0.5) for t in state.vector_results]
+            state.tools_used.append("HybridSearch" if self._hybrid else "DocumentSearchTool")
 
         return state
 
     def _node_fuse_context(self, state: AgentState) -> AgentState:
         """
-        Context Fusion: merges graph + vector + calculator results
-        into a single context string ordered by relevance.
+        Coverage-aware context builder:
+          1. Deduplication (Jaccard >85%)
+          2. Diversity (max 2 chunks per source file)
+          3. Extractive compression per chunk
+          4. Graph context prepended (20% budget)
+          5. Calculator results appended
         """
-        parts = []
+        payload_map = getattr(state, "_payload_map", {}) or {}
+        chunks_with_scores = getattr(state, "_chunks_with_scores", [])
+        if not chunks_with_scores:
+            chunks_with_scores = [(t, 0.5) for t in state.vector_results]
 
-        # Graph context first (more precise for structured queries)
-        if state.graph_context:
-            parts.append(f"[Knowledge Graph]\n{state.graph_context}")
-
-        # Calculator results
-        if state.calculator_results:
-            parts.append("[Calculations]\n" + "\n".join(state.calculator_results))
-
-        # Vector context
-        if state.vector_results:
-            parts.extend(state.vector_results)
-
+        # For summary queries, first combine all chunks then summarize
         if state.query_type == "summary":
-            summ_result = self.summarizer.run(state.vector_results)
-            parts = [summ_result.data]
+            summ = self.summarizer.run(state.vector_results, max_chars=6400)
+            chunks_with_scores = [(summ.data, 1.0)]
             state.tools_used.append("SummarizationTool")
 
-        state.final_context = "\n\n".join(parts)
+        # ── Coverage-aware context builder ─────────────────────────────────
+        doc_context, sources = self._ctx_builder.build(
+            chunks_with_scores, payload_map=payload_map, query=state.query
+        )
 
-        # Build sources list for frontend
-        state.sources = [
-            {"name": f"Document chunk {i+1}", "relevance": round(0.95 - i * 0.05, 2),
-             "chunk": chunk[:200]}
-            for i, chunk in enumerate(state.vector_results[:5])
-        ]
+        # ── Prepend graph context (secondary boost, ≤20% of budget) ────────
+        parts = []
+        if state.graph_context:
+            parts.append(f"[Knowledge Graph Context]\n{state.graph_context[:1600]}")
+        if state.calculator_results:
+            parts.append("[Calculations]\n" + "\n".join(state.calculator_results))
+        if doc_context:
+            parts.append(doc_context)
+
+        state.final_context = "\n\n".join(parts)
+        state.sources = sources
+        state.tools_used.append("ContextBuilder")
 
         return state
 
@@ -404,3 +500,41 @@ class AgentOrchestrator:
         if " and " in q:
             return [s.strip() for s in q.split(" and ") if s.strip()]
         return [query]
+
+    def _fetch_payload_map(self, limit: int = 200) -> dict:
+        """
+        Single Qdrant scroll — returns {text_prefix_100: payload_dict}.
+        Uses the Phase1RAG collection (phase1_documents), not the embedder's default.
+        """
+        try:
+            col = getattr(self._phase1_rag, "collection_name", "phase1_documents")
+            results = self._phase1_rag.embedder.qdrant.scroll(
+                collection_name=col,
+                scroll_filter=None,
+                limit=limit,
+                with_payload=True,
+            )
+            return {r.payload.get("text", "")[:100]: r.payload for r in results[0]}
+        except Exception:
+            return {}
+
+    def _extract_doc_names(self, chunks: List[str], payload_map: Optional[dict] = None) -> Optional[List[str]]:
+        """Best-effort doc name list for a set of chunks using a pre-fetched payload map."""
+        if payload_map is None:
+            payload_map = self._fetch_payload_map(limit=50)
+        if not payload_map:
+            return None
+        return [payload_map.get(c[:100], {}).get("file_name", "unknown") for c in chunks]
+
+    def _source_name(self, chunk: str, index: int, payload_map: Optional[dict] = None) -> str:
+        """Best-effort source name for a chunk string, using a pre-fetched payload map."""
+        if payload_map is None:
+            payload_map = self._fetch_payload_map()
+        payload = payload_map.get(chunk[:100], {})
+        fname = payload.get("file_name", "")
+        line_s = payload.get("line_start")
+        if fname and line_s:
+            return f"{fname} (line {line_s})"
+        if fname:
+            return fname
+        return f"Document chunk {index + 1}"

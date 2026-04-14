@@ -98,6 +98,7 @@ class IngestQueue:
             self._results[job.job_id] = {
                 "status": "queued",
                 "file": file_path,
+                "original_filename": original_filename or file_path.split("/")[-1] if file_path else "unknown",
                 "job_id": job.job_id,
                 "submitted_at": job.submitted_at,
                 "queue_depth": self._q.qsize() + 1,

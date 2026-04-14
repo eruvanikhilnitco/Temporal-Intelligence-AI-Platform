@@ -128,10 +128,21 @@ def ask_rag_full(question: str, role: str, session_id: str = "",
     }
 
 
-def ingest_file(file_path: str, tenant_id: Optional[str] = None) -> Optional[dict]:
+def ingest_file(
+    file_path: str,
+    tenant_id: Optional[str] = None,
+    sharepoint_file_id: Optional[str] = None,
+    sharepoint_folder_path: Optional[str] = None,
+    version: int = 1,
+) -> Optional[dict]:
     """
-    Ingest a single uploaded file into Qdrant and Neo4j.
-    Returns extracted entity dict or None on error.
+    Ingest a single file into Qdrant + knowledge graph.
+
+    Extra params for SharePoint traceability:
+      sharepoint_file_id    — stable SP item ID (survives renames)
+      sharepoint_folder_path — full folder path in SharePoint drive
+      version               — monotonically increasing version number used for
+                              atomic swap (insert v+1 → delete v) on updates
     """
     import uuid
     from pathlib import Path
@@ -143,19 +154,21 @@ def ingest_file(file_path: str, tenant_id: Optional[str] = None) -> Optional[dic
         raise RuntimeError("RAG service unavailable — Qdrant may be offline.")
 
     pipeline = Phase1Pipeline(folder_path=str(Path(file_path).parent))
+    fname = Path(file_path).name
 
     try:
         text = pipeline.extract_text(file_path)
     except Exception as e:
-        log_error("Ingest", f"Text extraction failed for {Path(file_path).name}", exc=e,
+        log_error("Ingest", f"Text extraction failed for {fname}", exc=e,
                   extra={"file_path": file_path})
         raise
 
-    chunks = pipeline.chunk_text(text)
-    fname = Path(file_path).name
+    if not text or not text.strip():
+        raise ValueError(f"Empty document after extraction: {fname}")
+
     access_roles = pipeline._infer_access_roles(file_path, text)
 
-    # Automatic metadata extraction (no hardcoding — MetadataExtractor driven)
+    # Automatic metadata extraction
     metadata: dict = {}
     try:
         from services.metadata_extractor import MetadataExtractor
@@ -164,42 +177,62 @@ def ingest_file(file_path: str, tenant_id: Optional[str] = None) -> Optional[dic
     except Exception as e:
         logger.warning(f"[ingest] Metadata extraction failed: {e}")
 
-    # Filter empty chunks
-    valid_chunks = [c for c in chunks if c.strip()]
+    # Token-aware chunking with rich metadata (chunk_id, line_start, line_end …)
+    chunk_metas = pipeline.chunk_text_with_metadata(text)
+    valid_metas = [c for c in chunk_metas if c["text"].strip()]
 
-    # Batch embedding — single model.encode() call, much faster than loop
-    vectors = rag.embedder.embed_batch(valid_chunks)
+    if not valid_metas:
+        raise ValueError(f"No usable chunks produced for {fname}")
+
+    chunk_texts = [c["text"] for c in valid_metas]
+
+    # Batch embedding — single model.encode() call
+    vectors = rag.embedder.embed_batch(chunk_texts)
 
     points = []
-    for chunk, vector in zip(valid_chunks, vectors):
+    for meta, vector in zip(valid_metas, vectors):
         payload = {
-            "text": chunk,
+            # Core retrieval fields
+            "text": meta["text"],
             "file_name": fname,
             "access_roles": access_roles,
+            # Classification
             "domain": metadata.get("domain", "general"),
             "doc_type": metadata.get("doc_type", "document"),
             "sensitivity": metadata.get("sensitivity", "low"),
             "classification_source": metadata.get("classification_source", "keyword"),
+            # Chunk traceability
+            "chunk_id": meta["chunk_id"],
+            "line_start": meta.get("line_start"),
+            "line_end": meta.get("line_end"),
+            "char_start": meta.get("char_start"),
+            "char_end": meta.get("char_end"),
+            "token_count": meta.get("token_count"),
+            # Versioning — used for atomic SP update (insert v+1 → delete v)
+            "version": version,
         }
-        # Multi-tenant isolation: tag every chunk with the uploading tenant's ID
+        # SharePoint traceability
+        if sharepoint_file_id:
+            payload["sharepoint_file_id"] = sharepoint_file_id
+        if sharepoint_folder_path:
+            payload["sharepoint_folder_path"] = sharepoint_folder_path
+        # Multi-tenant isolation
         if tenant_id:
             payload["tenant_id"] = tenant_id
-        points.append(
-            PointStruct(
-                id=str(uuid.uuid4()),
-                vector=vector,
-                payload=payload,
-            )
-        )
+
+        points.append(PointStruct(
+            id=str(uuid.uuid4()),
+            vector=vector,
+            payload=payload,
+        ))
 
     if points:
         rag.client.upsert(collection_name=rag.collection_name, points=points)
-        logger.info(f"Stored {len(points)} vectors for {fname} (batch embedding)")
+        logger.info(f"[ingest] Stored {len(points)} vectors for {fname} (v{version}, batch)")
 
     entities = rag.graph_rag.ingest_document(text, fname)
-    logger.info(f"Graph ingestion complete for {fname}: {entities}")
+    logger.info(f"[ingest] Graph ingestion complete for {fname}: {entities}")
 
-    # Store document metadata in graph and build cross-document links
     try:
         graph_svc = rag.graph_rag.graph
         if metadata:

@@ -787,13 +787,14 @@ class ChatbotService:
             upload_dir = Path(settings.upload_dir)
 
             if query_vec:
-                hits = qclient.search(
+                _resp = qclient.query_points(
                     collection_name="documents",
-                    query_vector=query_vec,
+                    query=query_vec,
                     limit=5,
                     with_payload=True,
                     with_vectors=False,
                 )
+                hits = _resp.points if hasattr(_resp, "points") else _resp
                 for hit in hits:
                     payload = hit.payload or {}
                     document_id = payload.get("document_id")

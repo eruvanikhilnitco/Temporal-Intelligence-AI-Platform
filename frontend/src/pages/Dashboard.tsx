@@ -7,6 +7,7 @@ import AdminPanel from "../components/AdminPanel";
 import AnalyticsDashboard from "../components/Analytics";
 import SettingsPage from "../components/Settings";
 import KnowledgeGraphUI from "../components/KnowledgeGraphUI";
+import SharePoint from "../components/SharePoint";
 import NotificationsPanel from "../components/NotificationsPanel";
 import { NavigateFn } from "../App";
 import axios from "axios";
@@ -38,7 +39,7 @@ class ErrorBoundary extends Component<
   }
 }
 
-type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph";
+type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph" | "sharepoint";
 
 const VIEW_LABELS: Record<View, string> = {
   chat: "Chat",
@@ -47,10 +48,11 @@ const VIEW_LABELS: Record<View, string> = {
   analytics: "Analytics",
   settings: "Settings",
   graph: "Knowledge Graph",
+  sharepoint: "SharePoint",
 };
 
 // Views restricted to admin only
-const ADMIN_ONLY_VIEWS: View[] = ["upload", "admin", "analytics", "settings", "graph"];
+const ADMIN_ONLY_VIEWS: View[] = ["upload", "admin", "analytics", "settings", "graph", "sharepoint"];
 
 export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
   const [view, setView] = useState<View>("chat");
@@ -123,11 +125,12 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
                   {isAdmin ? "Neural retrieval · Knowledge graph · Live" : "Intelligent document assistant · Live"}
                 </span>
               )}
-              {view === "upload"    && "Phase 1–3 ingestion pipeline"}
-              {view === "admin"     && "System administration & security"}
-              {view === "analytics" && "Performance metrics & engagement"}
-              {view === "settings"  && "Configuration & API keys"}
-              {view === "graph"     && "Entity relationships from your documents"}
+              {view === "upload"      && "Phase 1–3 ingestion pipeline"}
+              {view === "admin"       && "System administration & security"}
+              {view === "analytics"   && "Performance metrics & engagement"}
+              {view === "settings"    && "Configuration & API keys"}
+              {view === "graph"       && "Entity relationships from your documents"}
+              {view === "sharepoint"  && "Event-driven sync — stays connected until you disconnect"}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -187,11 +190,12 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
           <div className={view === "chat" ? "h-full" : "hidden"}>
             <ErrorBoundary label="Chat"><ChatInterface userRole={user?.role} /></ErrorBoundary>
           </div>
-          {view === "upload"    && isAdmin && <ErrorBoundary label="Upload"><DocumentUpload onNavigateToAdmin={() => setView("admin")} /></ErrorBoundary>}
-          {view === "admin"     && isAdmin && <ErrorBoundary label="Admin Panel"><AdminPanel user={user} /></ErrorBoundary>}
-          {view === "analytics" && isAdmin && <ErrorBoundary label="Analytics"><AnalyticsDashboard /></ErrorBoundary>}
-          {view === "settings"  && isAdmin && <ErrorBoundary label="Settings"><SettingsPage /></ErrorBoundary>}
-          {view === "graph"     && isAdmin && <ErrorBoundary label="Knowledge Graph"><KnowledgeGraphUI /></ErrorBoundary>}
+          {view === "upload"      && isAdmin && <ErrorBoundary label="Upload"><DocumentUpload onNavigateToAdmin={() => setView("admin")} /></ErrorBoundary>}
+          {view === "admin"       && isAdmin && <ErrorBoundary label="Admin Panel"><AdminPanel user={user} /></ErrorBoundary>}
+          {view === "analytics"   && isAdmin && <ErrorBoundary label="Analytics"><AnalyticsDashboard /></ErrorBoundary>}
+          {view === "settings"    && isAdmin && <ErrorBoundary label="Settings"><SettingsPage /></ErrorBoundary>}
+          {view === "graph"       && isAdmin && <ErrorBoundary label="Knowledge Graph"><KnowledgeGraphUI /></ErrorBoundary>}
+          {view === "sharepoint"  && isAdmin && <ErrorBoundary label="SharePoint"><SharePoint /></ErrorBoundary>}
         </div>
       </main>
     </div>
