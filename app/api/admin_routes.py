@@ -183,44 +183,52 @@ def get_analytics(
     current_user: dict = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Return real analytics data from the database."""
-    total_queries = db.query(ChatLog).count()
-    total_users = db.query(User).count()
-    active_rules = db.query(Rule).filter(Rule.active == True).count()
+    """Return analytics data — batched into minimal DB round-trips."""
+    from sqlalchemy import text
+
+    # ── Single-pass aggregate query over ChatLog ──────────────────────────────
+    agg = db.execute(text(
+        "SELECT COUNT(*) as total, "
+        "AVG(latency_ms) as avg_lat, "
+        "SUM(CASE WHEN latency_ms < 50 THEN 1 ELSE 0 END) as cache_hits, "
+        "SUM(CASE WHEN graph_used = 1 THEN 1 ELSE 0 END) as graph_hits, "
+        "AVG(confidence) as avg_conf "
+        "FROM chat_logs"
+    )).fetchone()
+
+    total_queries = agg[0] or 0
+    avg_latency   = float(agg[1] or 0)
+    cache_rate    = (agg[2] or 0) / max(total_queries, 1) * 100
+    graph_rate    = (agg[3] or 0) / max(total_queries, 1) * 100
+    avg_conf      = float(agg[4] or 0)
+
+    # Counts that don't need ChatLog
+    total_users    = db.query(User).count()
+    active_rules   = db.query(Rule).filter(Rule.active == True).count()
     security_events = db.query(SecurityEvent).count()
 
-    # Avg latency
-    avg_latency = db.query(func.avg(ChatLog.latency_ms)).scalar() or 0
+    # Daily queries — one GROUP BY query instead of 14 individual queries
+    daily_rows = db.execute(text(
+        "SELECT DATE(created_at) as d, COUNT(*) as n "
+        "FROM chat_logs "
+        "WHERE created_at >= DATE('now','-13 days') "
+        "GROUP BY DATE(created_at)"
+    )).fetchall()
+    daily_map = {str(r[0]): r[1] for r in daily_rows}
+    daily = [
+        daily_map.get((datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d"), 0)
+        for i in range(13, -1, -1)
+    ]
 
-    # Cache hit rate
-    cache_hits = db.query(ChatLog).filter(ChatLog.latency_ms < 50).count()
-    cache_rate = (cache_hits / max(total_queries, 1)) * 100
-
-    # Graph usage
-    graph_count = db.query(ChatLog).filter(ChatLog.graph_used == True).count()
-    graph_rate = (graph_count / max(total_queries, 1)) * 100
-
-    # Avg confidence
-    avg_conf = db.query(func.avg(ChatLog.confidence)).scalar() or 0
-
-    # Daily queries (last 14 days)
-    daily = []
-    for i in range(13, -1, -1):
-        day = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
-        count = db.query(ChatLog).filter(
-            func.date(ChatLog.created_at) == day
-        ).count()
-        daily.append(count)
-
-    # Hourly queries (today)
-    hourly = []
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    for h in range(24):
-        count = db.query(ChatLog).filter(
-            func.date(ChatLog.created_at) == today,
-            func.extract("hour", ChatLog.created_at) == h,
-        ).count()
-        hourly.append(count)
+    # Hourly queries — one GROUP BY query instead of 24
+    hourly_rows = db.execute(text(
+        "SELECT CAST(STRFTIME('%H', created_at) AS INTEGER) as h, COUNT(*) as n "
+        "FROM chat_logs "
+        "WHERE DATE(created_at) = DATE('now') "
+        "GROUP BY h"
+    )).fetchall()
+    hourly_map = {r[0]: r[1] for r in hourly_rows}
+    hourly = [hourly_map.get(h, 0) for h in range(24)]
 
     # Query type distribution
     type_rows = (
@@ -228,32 +236,29 @@ def get_analytics(
         .group_by(ChatLog.query_type)
         .all()
     )
-    top_query_types = {row[0]: row[1] for row in type_rows}
+    top_query_types = {row[0]: row[1] for row in type_rows if row[0]}
 
-    # Retrieval quality
     retrieval_quality = [
-        {"type": "Fact lookup", "score": 94, "queries": 0},
-        {"type": "Summary", "score": 88, "queries": 0},
-        {"type": "Multi-hop", "score": 83, "queries": 0},
-        {"type": "Analytical", "score": 79, "queries": 0},
-        {"type": "Comparison", "score": 74, "queries": 0},
+        {"type": "Fact lookup",  "score": 94, "queries": top_query_types.get("fact_lookup", 0)},
+        {"type": "Summary",      "score": 88, "queries": top_query_types.get("summary", 0)},
+        {"type": "Multi-hop",    "score": 83, "queries": top_query_types.get("multi_hop", 0)},
+        {"type": "Analytical",   "score": 79, "queries": top_query_types.get("analytical", 0)},
+        {"type": "Comparison",   "score": 74, "queries": top_query_types.get("comparison", 0)},
     ]
-    for rq in retrieval_quality:
-        rq["queries"] = top_query_types.get(rq["type"].lower().replace(" ", "_"), 0)
 
     return {
-        "total_queries": total_queries,
-        "avg_latency_ms": round(float(avg_latency), 1),
-        "cache_hit_rate": round(cache_rate, 1),
+        "total_queries":    total_queries,
+        "avg_latency_ms":   round(avg_latency, 1),
+        "cache_hit_rate":   round(cache_rate, 1),
         "graph_usage_rate": round(graph_rate, 1),
-        "avg_confidence": round(float(avg_conf), 1),
-        "total_users": total_users,
-        "active_rules": active_rules,
-        "security_events": security_events,
-        "daily_queries": daily,
-        "hourly_queries": hourly,
+        "avg_confidence":   round(avg_conf, 1),
+        "total_users":      total_users,
+        "active_rules":     active_rules,
+        "security_events":  security_events,
+        "daily_queries":    daily,
+        "hourly_queries":   hourly,
         "retrieval_quality": retrieval_quality,
-        "top_query_types": top_query_types,
+        "top_query_types":  top_query_types,
     }
 
 
@@ -297,17 +302,22 @@ def user_analytics(
 
 # ── Knowledge Graph API ───────────────────────────────────────────────────────
 
+_graph_service_cache = None
+
 @router.get("/graph/data")
 def get_graph_data(
     limit: int = Query(200, ge=10, le=1000),
     current_user: dict = Depends(require_admin),
 ):
     """Return graph nodes and edges from SQLite for visualization."""
+    global _graph_service_cache
     try:
-        from services.graph_service import GraphService
-        gs = GraphService()
-        return gs.get_all_data(limit=limit)
+        if _graph_service_cache is None:
+            from services.graph_service import GraphService
+            _graph_service_cache = GraphService()
+        return _graph_service_cache.get_all_data(limit=limit)
     except Exception as e:
+        _graph_service_cache = None  # reset so next call retries
         logger.warning(f"Graph data fetch failed: {e}")
         return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0}
 
@@ -368,432 +378,7 @@ def get_entity_relations(
         return {"entity": entity_name, "relations": [], "count": 0}
 
 
-# ── SharePoint Ingestion (Microsoft Graph API) ────────────────────────────────
-
-class SharePointRequest(BaseModel):
-    site_url: str
-    library_name: str = "Shared Documents"
-    folder_path: str = ""           # optional sub-folder within library
-    file_types: List[str] = []      # empty = all supported types
-    recursive: bool = True
-
-
-def _get_graph_token() -> str:
-    """
-    Get an OAuth2 access token from Azure AD using client_credentials flow.
-    Reads SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET from env.
-    Raises RuntimeError if env vars are missing or token request fails.
-    """
-    import requests as _req
-
-    tenant_id = os.getenv("SHAREPOINT_TENANT_ID", "")
-    client_id = os.getenv("SHAREPOINT_CLIENT_ID", "")
-    client_secret = os.getenv("SHAREPOINT_CLIENT_SECRET", "")
-
-    if not (tenant_id and client_id and client_secret):
-        raise RuntimeError(
-            "SharePoint Graph API credentials not configured. "
-            "Set SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET in .env"
-        )
-
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    resp = _req.post(token_url, data={
-        "grant_type": "client_credentials",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scope": "https://graph.microsoft.com/.default",
-    }, timeout=15)
-
-    if not resp.ok:
-        raise RuntimeError(f"Token request failed ({resp.status_code}): {resp.text[:300]}")
-
-    return resp.json()["access_token"]
-
-
-def _graph_get(url: str, token: str) -> dict:
-    import requests as _req
-    r = _req.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
-    if not r.ok:
-        raise RuntimeError(f"Graph API error {r.status_code}: {r.text[:300]}")
-    return r.json()
-
-
-def _ingest_via_graph_api(req: "SharePointRequest") -> dict:
-    """
-    Ingest SharePoint files using Microsoft Graph API (client_credentials flow).
-    Credentials are read from .env — never from the request body.
-    """
-    import requests as _req
-    import tempfile as _tmp
-    from urllib.parse import quote as _quote
-    from app.services.rag_service import ingest_file
-
-    SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
-    allowed_exts = (
-        {f".{t.lstrip('.')}" for t in req.file_types} & SUPPORTED_EXTS
-        if req.file_types else SUPPORTED_EXTS
-    )
-
-    token = _get_graph_token()
-
-    # Resolve site ID from URL
-    import re as _re
-    m = _re.search(r"https://([^/]+)/sites/([^/?#]+)", req.site_url)
-    if not m:
-        raise RuntimeError(
-            f"Cannot parse site URL: {req.site_url!r}. "
-            "Expected format: https://yourcompany.sharepoint.com/sites/YourSite"
-        )
-    hostname, site_name = m.group(1), m.group(2)
-
-    site_info = _graph_get(
-        f"https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site_name}",
-        token,
-    )
-    site_id = site_info["id"]
-
-    # Find the drive (document library) by name — case-insensitive match
-    drives = _graph_get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", token)
-    drive_list = drives.get("value", [])
-    drive = next(
-        (d for d in drive_list if d.get("name", "").lower() == req.library_name.lower()),
-        None,
-    )
-    if not drive and drive_list:
-        # Fallback: use first available drive
-        drive = drive_list[0]
-        logger.warning(
-            "[SharePoint] Library %r not found; using first available: %r",
-            req.library_name, drive.get("name"),
-        )
-    if not drive:
-        raise RuntimeError(f"No document libraries found for site: {site_id}")
-    drive_id = drive.get("id", "")
-
-    ingested: list = []
-    errors: list = []
-
-    def traverse(item_id: str, depth: int = 0):
-        if depth > 10:
-            return
-        try:
-            children = _graph_get(
-                f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children",
-                token,
-            )
-        except Exception as e:
-            logger.warning("[SharePoint] Failed to list children of %s: %s", item_id, e)
-            return
-        for item in children.get("value", []):
-            if "folder" in item:
-                if req.recursive:
-                    traverse(item["id"], depth + 1)
-            elif "file" in item:
-                name = item.get("name", "")
-                ext = os.path.splitext(name)[1].lower()
-                if ext not in allowed_exts:
-                    continue
-                # Prefer the pre-authenticated download URL; fall back to Graph API download
-                dl_url = item.get("@microsoft.graph.downloadUrl", "")
-                if not dl_url:
-                    # Build a direct download URL via Graph API
-                    item_id_val = item.get("id", "")
-                    if item_id_val:
-                        dl_url = (
-                            f"https://graph.microsoft.com/v1.0/drives/{drive_id}"
-                            f"/items/{item_id_val}/content"
-                        )
-                if not dl_url:
-                    errors.append({"file": name, "error": "No download URL available"})
-                    continue
-                try:
-                    dl_headers = {"Authorization": f"Bearer {token}"}
-                    dl = _req.get(dl_url, headers=dl_headers, timeout=120, allow_redirects=True)
-                    if not dl.ok:
-                        errors.append({"file": name, "error": f"Download failed HTTP {dl.status_code}"})
-                        continue
-                    with _tmp.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                        tmp.write(dl.content)
-                        tmp_path = tmp.name
-                    try:
-                        entities = ingest_file(tmp_path)
-                        ingested.append({"file": name, "entities": entities})
-                        logger.info("[SharePoint-Graph] Ingested: %s", name)
-                    except Exception as ie:
-                        errors.append({"file": name, "error": str(ie)[:200]})
-                    finally:
-                        try:
-                            os.unlink(tmp_path)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    errors.append({"file": name, "error": str(e)[:200]})
-
-    # Start from folder_path or root — URL-encode path segments to handle spaces
-    if req.folder_path:
-        # Encode each path segment separately to preserve slashes
-        encoded_path = "/".join(_quote(seg, safe="") for seg in req.folder_path.strip("/").split("/"))
-        try:
-            root = _graph_get(
-                f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{encoded_path}",
-                token,
-            )
-            root_id = root["id"]
-        except Exception as e:
-            raise RuntimeError(
-                f"Folder not found: {req.folder_path!r}. "
-                f"Graph API error: {e}. "
-                "Check the sub-folder path is correct (case-sensitive, use forward slashes)."
-            )
-    else:
-        root_id = "root"
-
-    traverse(root_id)
-
-    return {
-        "status": "complete",
-        "ingested": len(ingested),
-        "errors": len(errors),
-        "files": ingested,
-        "error_details": errors,
-        "auth_method": "Microsoft Graph API (client_credentials)",
-    }
-
-
-
-
-@router.post("/sharepoint/test")
-def sharepoint_test(
-    req: SharePointRequest,
-    current_user: dict = Depends(require_admin),
-):
-    """
-    Test Microsoft Graph API connection and return available document libraries.
-    Credentials come from .env (SHAREPOINT_TENANT_ID/CLIENT_ID/CLIENT_SECRET).
-    """
-    try:
-        token = _get_graph_token()
-        import re as _re
-        m = _re.search(r"https://([^/]+)/sites/([^/?#]+)", req.site_url)
-        if not m:
-            raise ValueError(f"Cannot parse site URL: {req.site_url}")
-        hostname, site_name = m.group(1), m.group(2)
-        site_info = _graph_get(
-            f"https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site_name}",
-            token,
-        )
-        site_id = site_info["id"]
-        drives = _graph_get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", token)
-        libraries = [{"id": d["id"], "name": d.get("name", ""), "driveType": d.get("driveType", "")}
-                     for d in drives.get("value", [])]
-        return {
-            "status": "connected",
-            "site_display_name": site_info.get("displayName", site_name),
-            "site_id": site_id,
-            "libraries": libraries,
-        }
-    except Exception as e:
-        logger.error("[SharePoint] Test connection failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Connection failed: {str(e)[:300]}")
-
-
-@router.post("/sharepoint/ingest")
-def sharepoint_ingest(
-    req: SharePointRequest,
-    current_user: dict = Depends(require_admin),
-):
-    """
-    Ingest SharePoint files via Microsoft Graph API (client_credentials flow).
-    Credentials (client_id, client_secret, tenant_id) are read from .env — NOT from the request.
-    """
-    try:
-        result = _ingest_via_graph_api(req)
-        logger.info(
-            "[SharePoint] Graph API: %d ingested, %d errors",
-            result["ingested"], result["errors"],
-        )
-        return result
-    except Exception as e:
-        logger.error("[SharePoint] Graph API ingestion failed: %s", e)
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"SharePoint ingestion failed: {str(e)[:300]}\n\n"
-                "Check that SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET "
-                "are set in .env and that the app registration has Sites.Read.All permission."
-            ),
-        )
-
-
-class SharePointBrowseRequest(BaseModel):
-    site_url: str
-    library_name: str = "Shared Documents"
-    item_id: Optional[str] = None   # None = root; otherwise browse this item's children
-
-
-def _resolve_drive(site_url: str, library_name: str, token: str):
-    """Return (site_id, drive_id) for a SharePoint site + library."""
-    import re as _re
-    m = _re.search(r"https://([^/]+)/sites/([^/?#]+)", site_url)
-    if not m:
-        raise RuntimeError(f"Cannot parse site URL: {site_url!r}")
-    hostname, site_name = m.group(1), m.group(2)
-    site_info = _graph_get(
-        f"https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site_name}", token
-    )
-    site_id = site_info["id"]
-    drives = _graph_get(f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives", token)
-    drive_list = drives.get("value", [])
-    drive = next(
-        (d for d in drive_list if d.get("name", "").lower() == library_name.lower()), None
-    ) or (drive_list[0] if drive_list else None)
-    if not drive:
-        raise RuntimeError(f"No drives found for site {site_id}")
-    return site_id, drive.get("id", "")
-
-
-@router.post("/sharepoint/browse")
-def sharepoint_browse(
-    req: SharePointBrowseRequest,
-    current_user: dict = Depends(require_admin),
-):
-    """
-    Browse one level of a SharePoint drive.
-    Returns files + sub-folders at the given item_id (or root if None).
-    """
-    try:
-        token = _get_graph_token()
-        _, drive_id = _resolve_drive(req.site_url, req.library_name, token)
-        item_id = req.item_id or "root"
-        data = _graph_get(
-            f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children"
-            "?$select=id,name,file,folder,size,lastModifiedDateTime,@microsoft.graph.downloadUrl",
-            token,
-        )
-        items = []
-        for it in data.get("value", []):
-            if "folder" in it:
-                items.append({
-                    "id": it["id"],
-                    "name": it["name"],
-                    "type": "folder",
-                    "child_count": it["folder"].get("childCount", 0),
-                    "modified": it.get("lastModifiedDateTime", ""),
-                })
-            elif "file" in it:
-                ext = os.path.splitext(it["name"])[1].lower()
-                items.append({
-                    "id": it["id"],
-                    "name": it["name"],
-                    "type": "file",
-                    "ext": ext,
-                    "size": it.get("size", 0),
-                    "modified": it.get("lastModifiedDateTime", ""),
-                    "downloadUrl": it.get("@microsoft.graph.downloadUrl", ""),
-                })
-        # folders first, then files
-        items.sort(key=lambda x: (0 if x["type"] == "folder" else 1, x["name"].lower()))
-        return {"drive_id": drive_id, "item_id": item_id, "items": items}
-    except Exception as e:
-        logger.error("[SharePoint] Browse failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Browse failed: {str(e)[:400]}")
-
-
-class SharePointIngestItemsRequest(BaseModel):
-    site_url: str
-    library_name: str = "Shared Documents"
-    items: List[dict]   # [{id, name, downloadUrl?}]
-
-
-@router.post("/sharepoint/ingest/items")
-def sharepoint_ingest_selected(
-    req: SharePointIngestItemsRequest,
-    current_user: dict = Depends(require_admin),
-):
-    """
-    Download selected SharePoint files and submit them to the async ingest queue.
-    Uses the same pipeline as regular file upload — no direct Qdrant dependency here.
-    items: [{id, name, downloadUrl?}]
-    """
-    import requests as _req
-    import shutil
-    from pathlib import Path
-
-    SUPPORTED_EXTS = {".pdf", ".xml", ".txt", ".docx", ".json", ".csv", ".html", ".pptx", ".md"}
-    UPLOAD_DIR = Path("uploaded_docs")
-    UPLOAD_DIR.mkdir(exist_ok=True)
-
-    try:
-        token = _get_graph_token()
-        _, drive_id = _resolve_drive(req.site_url, req.library_name, token)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"SharePoint auth error: {str(e)[:300]}")
-
-    # Lazy-import the async queue (already running in the app process)
-    try:
-        from services.ingest_queue import get_ingest_queue
-        queue = get_ingest_queue()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingest queue unavailable: {e}")
-
-    queued: list = []
-    errors: list = []
-
-    for item in req.items:
-        name = item.get("name", "unknown")
-        ext = os.path.splitext(name)[1].lower()
-        if ext not in SUPPORTED_EXTS:
-            errors.append({"file": name, "error": f"Unsupported file type: {ext}"})
-            continue
-
-        # Build download URL: prefer pre-signed URL, fall back to Graph API content endpoint
-        dl_url = item.get("downloadUrl", "").strip()
-        item_id_val = item.get("id", "")
-        if not dl_url and item_id_val:
-            dl_url = (
-                f"https://graph.microsoft.com/v1.0/drives/{drive_id}"
-                f"/items/{item_id_val}/content"
-            )
-        if not dl_url:
-            errors.append({"file": name, "error": "No download URL and no item ID"})
-            continue
-
-        try:
-            dl_headers = {"Authorization": f"Bearer {token}"}
-            dl = _req.get(dl_url, headers=dl_headers, timeout=120, allow_redirects=True)
-            if not dl.ok:
-                errors.append({"file": name, "error": f"Download failed: HTTP {dl.status_code}"})
-                continue
-
-            # Save to uploaded_docs/ with original filename
-            dest = UPLOAD_DIR / name
-            # If a file with same name already exists, overwrite
-            dest.write_bytes(dl.content)
-
-            # Submit to async background queue — same as /upload endpoint
-            job_id = queue.submit(
-                file_path=str(dest),
-                original_filename=name,
-                tenant_id=current_user.get("tenant_id"),
-            )
-            queued.append({"file": name, "job_id": job_id, "size": len(dl.content)})
-            logger.info("[SharePoint] Queued for ingest: %s (job=%s)", name, job_id)
-
-        except Exception as e:
-            errors.append({"file": name, "error": str(e)[:200]})
-
-    return {
-        "status": "queued",
-        "ingested": len(queued),
-        "errors": len(errors),
-        "files": queued,
-        "error_details": errors,
-        "message": (
-            f"{len(queued)} file(s) downloaded and queued for background ingestion. "
-            "Check the ETL queue status for progress."
-            if queued else "No files were successfully queued."
-        ),
-    }
+# SharePoint is handled by app/api/sharepoint_routes.py
 
 
 # ── Document Access Control Management ───────────────────────────────────────
@@ -1217,6 +802,52 @@ def get_chunks(
         }
     except Exception as e:
         return {"total": 0, "collections": [], "chunks": [], "error": str(e)}
+
+
+@router.get("/ingest-jobs")
+def get_ingest_jobs(current_user: dict = Depends(require_admin)):
+    """
+    Return current ingest queue state: active, queued, and recently completed jobs.
+    Used by the chunks page to show live ingestion progress.
+    """
+    try:
+        from services.ingest_queue import get_ingest_queue
+        q = get_ingest_queue()
+        all_jobs = q.all_statuses()  # [{status, file_path, job_id, submitted_at, ...}]
+
+        # Enrich with SharePoint source flag and human-readable name
+        enriched = []
+        for job in all_jobs:
+            fp = job.get("file", "")
+            name = job.get("original_filename") or (fp.split("/")[-1] if fp else "unknown")
+            is_sharepoint = "sharepoint" in fp.lower() or ("tmp" in fp.lower() and name.lower().endswith((".pdf",".docx",".xlsx",".pptx")))
+            enriched.append({
+                "job_id": job.get("job_id", ""),
+                "filename": name,
+                "status": job.get("status", "unknown"),
+                "submitted_at": job.get("submitted_at"),
+                "started_at": job.get("started_at"),
+                "done_at": job.get("done_at"),
+                "elapsed_s": round(job.get("elapsed_s", 0), 1),
+                "error": job.get("error"),
+                "is_sharepoint": is_sharepoint,
+                "source": "sharepoint" if is_sharepoint else "upload",
+            })
+
+        # Separate active / queued / recent-done
+        active  = [j for j in enriched if j["status"] in ("processing", "queued")]
+        recent  = [j for j in enriched if j["status"] in ("done", "error")][:20]
+
+        return {
+            "active_count": len(active),
+            "active": active,
+            "recent": recent,
+            "total_processed": sum(1 for j in enriched if j["status"] == "done"),
+            "total_errors": sum(1 for j in enriched if j["status"] == "error"),
+        }
+    except Exception as e:
+        logger.warning(f"[IngestJobs] Failed: {e}")
+        return {"active_count": 0, "active": [], "recent": [], "total_processed": 0, "total_errors": 0}
 
 
 @router.get("/storage/info")

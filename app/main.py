@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as rag_router
 from app.api.auth_routes import router as auth_router
 from app.api.admin_routes import router as admin_router
+from app.api.sharepoint_routes import router as sharepoint_router
 from app.db import init_db, get_db
 from core.config import get_settings
 from app.error_logger import get_error_middleware, log_critical
@@ -43,7 +44,8 @@ def startup():
     _warmup_rag_background()
     _start_ingest_queue()
     _start_health_monitor()
-    logging.getLogger(__name__).info("[Startup] CortexFlow v4.1 started — error log: logs/error_log.jsonl")
+    _resume_sharepoint_connections()
+    logging.getLogger(__name__).info("[Startup] CortexFlow v5.0 started — error log: logs/error_log.jsonl")
 
 
 def _start_ingest_queue():
@@ -64,6 +66,17 @@ def _start_health_monitor():
         logging.getLogger(__name__).info("[Startup] Health monitor started")
     except Exception as e:
         logging.getLogger(__name__).warning(f"[Startup] Health monitor failed to start: {e}")
+
+
+def _resume_sharepoint_connections():
+    """Resume delta sync for any SharePoint connections that were active before restart."""
+    try:
+        from services.sharepoint_service import get_sharepoint_service
+        svc = get_sharepoint_service()
+        svc.resume_connections()
+        logging.getLogger(__name__).info("[Startup] SharePoint connections resumed")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[Startup] SharePoint resume failed (non-fatal): {e}")
 
 
 def _warmup_rag_background():
@@ -121,3 +134,4 @@ def _seed_default_rules():
 app.include_router(auth_router)
 app.include_router(rag_router)
 app.include_router(admin_router)
+app.include_router(sharepoint_router)

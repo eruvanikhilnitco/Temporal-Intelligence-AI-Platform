@@ -194,6 +194,24 @@ def ask_question(
                 query_type="admin", sources=[], latency_ms=latency_ms, chat_log_id=chat_log_id,
             )
 
+    # Greeting fast-path — no RAG or model loading needed
+    _GREETINGS_FAST = {
+        "hello","hi","hey","good morning","good afternoon","good evening",
+        "how are you","what's up","how do you do","nice to meet you",
+    }
+    q_norm = req.question.lower().strip()
+    if any(q_norm == g or q_norm.startswith(g + " ") or q_norm.startswith(g + ",") for g in _GREETINGS_FAST):
+        _greeting_ans = (
+            "Hey there! I'm doing great, thanks for asking! "
+            "I'm CortexFlow AI — your intelligent document assistant. "
+            "I'm here to help you find information, answer questions about documents, "
+            "and make sense of complex data. What can I help you with today?"
+        )
+        return AskResponse(
+            answer=_greeting_ans, graph_used=False, confidence=100.0,
+            query_type="greeting", sources=[], latency_ms=0, chat_log_id="",
+        )
+
     # Use self-learning service
     try:
         from services.self_learning import get_self_learning
