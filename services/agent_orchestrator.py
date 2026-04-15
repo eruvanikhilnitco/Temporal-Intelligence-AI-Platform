@@ -210,6 +210,10 @@ class AgentOrchestrator:
         from services.context_builder import get_context_builder
         self._ctx_builder = get_context_builder()
 
+        # Cached payload map (text[:100] → payload) — rebuilt at most every 120s
+        self._payload_cache: dict = {}
+        self._payload_cache_ts: float = 0.0
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self, query: str, user_role: str = "user",
@@ -231,6 +235,15 @@ class AgentOrchestrator:
             state.answer = self.llm.generate_answer(query, "", role=user_role)
             state.confidence = 100.0
             state.latency_ms = 0
+            return state
+
+        # Fast-path: navigation / "where is X" queries → nav_graph lookup
+        nav_answer = self._try_nav_graph(query)
+        if nav_answer:
+            state.answer = nav_answer
+            state.confidence = 90.0
+            state.query_type = "navigation"
+            state.latency_ms = int((time.time() - t_start) * 1000)
             return state
 
         # Cache key includes tenant_id so clients never see each other's cached results
@@ -492,6 +505,90 @@ class AgentOrchestrator:
         state.confidence = min(round(base, 1), 98.0)
         return state
 
+    # ── Navigation graph fast-path ────────────────────────────────────────────
+
+    _NAV_KEYWORDS = (
+        "navigate", "navigation", "how do i go", "how to go", "how do i get to",
+        "link to", "direct link", "url for", "where is the", "where can i find",
+        "go to", "open the", "find the page", "take me to", "show me",
+    )
+
+    def _try_nav_graph(self, query: str) -> str:
+        """
+        If the query is a navigation intent, look up the nav_graph from
+        all active website crawl connections and return a direct answer with URL.
+        Returns empty string if nav intent not detected or no match found.
+        """
+        q = query.lower().strip()
+        is_nav = any(kw in q for kw in self._NAV_KEYWORDS)
+        if not is_nav:
+            return ""
+
+        try:
+            from services.website_crawler import get_website_crawler
+            crawler = get_website_crawler()
+            if crawler is None:
+                return ""
+
+            # Search all active connections' nav graphs
+            best_match = None
+            best_score = 0
+
+            for conn in crawler.get_connections():
+                if conn.get("status") not in ("active", "done"):
+                    continue
+                nav_graph = conn.get("nav_graph", {})
+                org = conn.get("org_name") or conn.get("url", "")
+
+                for url, node in nav_graph.items():
+                    title = (node.get("title") or "").lower()
+                    # Score: how many query words match the page title
+                    q_words = set(q.split()) - {"the", "a", "an", "to", "in", "of", "on", "for", "i", "how", "do", "navigate", "page", "go", "find", "where", "is"}
+                    title_words = set(title.split())
+                    score = len(q_words & title_words)
+                    if score > best_score:
+                        best_score = score
+                        best_match = {
+                            "url": url,
+                            "title": node.get("title", url),
+                            "breadcrumb": node.get("breadcrumb", []),
+                            "parent": node.get("parent", ""),
+                            "org": org,
+                        }
+
+            if best_match and best_score >= 1:
+                title = best_match["title"]
+                url = best_match["url"]
+                breadcrumb = best_match.get("breadcrumb", [])
+                org = best_match.get("org", "")
+                parent = best_match.get("parent", "")
+
+                # Build navigation steps
+                steps = []
+                if breadcrumb and len(breadcrumb) > 1:
+                    for i, crumb in enumerate(breadcrumb[:-1], 1):
+                        steps.append(f"{i}. Click **{crumb}**")
+                    steps.append(f"{len(breadcrumb)}. You're on **{title}**")
+                elif parent:
+                    from urllib.parse import urlparse
+                    parent_path = urlparse(parent).path.strip("/") or "home"
+                    steps = [f"1. Go to the **{parent_path.capitalize()}** section", f"2. Select **{title}**"]
+
+                nav_answer = f"Here's how to navigate to the **{title}** page"
+                if org:
+                    nav_answer += f" on {org}"
+                nav_answer += ":\n\n"
+                nav_answer += f"**Direct link:** [{url}]({url})\n\n"
+                if steps:
+                    nav_answer += "**Step-by-step navigation:**\n" + "\n".join(steps)
+
+                return nav_answer
+
+        except Exception as e:
+            logger.debug("[Orchestrator] Nav graph lookup failed: %s", e)
+
+        return ""
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _decompose(self, query: str) -> List[str]:
@@ -503,9 +600,26 @@ class AgentOrchestrator:
 
     def _fetch_payload_map(self, limit: int = 200) -> dict:
         """
-        Single Qdrant scroll — returns {text_prefix_100: payload_dict}.
-        Uses the Phase1RAG collection (phase1_documents), not the embedder's default.
+        Returns {text_prefix_100: payload_dict}.
+
+        First tries BM25 metadata (already in memory, zero cost).
+        Falls back to a cached Qdrant scroll (TTL=120s) so repeated queries
+        never pay the scroll cost more than once every 2 minutes.
         """
+        # Prefer BM25 meta — already fetched, no extra I/O
+        if self._hybrid is not None and getattr(self._hybrid, "_bm25_meta", None):
+            try:
+                with self._hybrid._bm25_lock:
+                    meta = list(self._hybrid._bm25_meta)
+                return {m.get("text", "")[:100]: m for m in meta if m.get("text")}
+            except Exception:
+                pass
+
+        # Use cached map if fresh (< 120s old)
+        if self._payload_cache and (time.time() - self._payload_cache_ts) < 120:
+            return self._payload_cache
+
+        # Fall back to Qdrant scroll
         try:
             col = getattr(self._phase1_rag, "collection_name", "phase1_documents")
             results = self._phase1_rag.embedder.qdrant.scroll(
@@ -514,7 +628,10 @@ class AgentOrchestrator:
                 limit=limit,
                 with_payload=True,
             )
-            return {r.payload.get("text", "")[:100]: r.payload for r in results[0]}
+            pmap = {r.payload.get("text", "")[:100]: r.payload for r in results[0]}
+            self._payload_cache = pmap
+            self._payload_cache_ts = time.time()
+            return pmap
         except Exception:
             return {}
 

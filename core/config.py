@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o"
     openai_base_url: str = "https://api.openai.com/v1"
 
+    # Redis (cache persistence + sessions)
+    redis_url: str = ""   # e.g. redis://localhost:6379/0  — leave empty to use in-memory cache
+
+    # MinIO / S3 (object storage for raw files and HTML snapshots)
+    minio_endpoint: str = ""        # e.g. localhost:9000
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket: str = "cortexflow"
+    minio_secure: bool = False      # True for HTTPS/production
+
     # SharePoint (Microsoft Graph API)
     sharepoint_tenant_id: str = ""
     sharepoint_client_id: str = ""

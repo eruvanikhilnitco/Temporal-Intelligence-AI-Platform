@@ -5,6 +5,131 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [7.1.0] — 2026-04-15
+
+### Fixed
+- **Website chunks not indexed (0 chunks bug)** (`services/embedding_service.py`): Added `get_embedding_service()` singleton function that the website crawler imports. Previously this function did not exist, causing a silent `ImportError` inside `_ingest_page()` and returning 0 chunks for every crawled page.
+- **Content hash dedup blocking re-index** (`services/website_crawler.py` — `refresh_crawl()`): On re-crawl, if `chunks_indexed == 0` the content hashes are now cleared so all pages are re-processed. Previously hashes from a failed crawl blocked all pages from being re-indexed.
+- **Admin signup page removed**: Removed `signup-admin` page route from `App.tsx` and updated `Landing.tsx` "Register as Admin" button to redirect to admin sign-in instead. Admin account is superadmin-only — no self-registration.
+
+### Added
+- **Navigation fast-path** (`services/agent_orchestrator.py` — `_try_nav_graph()`): Detects navigation intent keywords ("navigate", "link to", "where is", "how do i go to", etc.) and directly queries the crawler's `nav_graph` dictionary. Returns direct URL + step-by-step breadcrumb path without going through RAG pipeline.
+- **`get_connections()`** method on `WebsiteCrawler` — exposes all active connections with full `nav_graph` for the orchestrator nav fast-path.
+- **`get_embedding_service()`** singleton in `services/embedding_service.py` — thread-safe process-wide instance used by website crawler and any other service needing embeddings.
+
+### Changed
+- `services/website_crawler.py` — `refresh_crawl()` now resets `chunks_indexed` counter and clears content hashes when previous crawl produced 0 chunks (force full re-index).
+- `services/phase1_llm.py` — Admin system prompt updated to include guidance on using website chunk URL fields for navigation answers.
+- `frontend/src/App.tsx` — Removed `"signup-admin"` from `Page` type union and router switch.
+- `frontend/src/pages/Landing.tsx` — "Register as Admin" CTA changed to "Admin Sign In" (navigates to `admin-login`).
+- Backend now serves built React SPA (`frontend/dist/`) from FastAPI on port 8000, eliminating dependency on Vite port forwarding through GitHub Codespace.
+
+---
+
+## [7.0.0] — 2026-04-15
+
+### Added
+- **Hardcoded Superadmin** (`app/main.py` — `_seed_superadmin()`): On every startup the system seeds `n.eruva@nitcoinc.com` with `Nikhil@1234` as the sole admin account. POST `/auth/signup/admin` now returns 403; no self-registration possible.
+- **Priority-based BFS Crawler** (`services/website_crawler.py`): URL scoring table (`_URL_PRIORITY`) assigns numeric priorities to page types (home=0, services/about=1, blog/tags=5–9). Uses `heapq` min-heap so high-value pages are crawled first. Skip patterns (`_SKIP_URL_PATTERNS`) exclude binaries, pagination loops, and bot-noise URLs.
+- **Navigation Graph** (`services/website_crawler.py` — `_update_nav_graph()`): Every crawled page builds a node `{title, url, parent, children, breadcrumb, page_type, depth}` stored in `conn.nav_graph`. Breadcrumb paths are derived from parent chain. Graph persisted to `crawler_connections.json`. `GET /website/nav-graph/{connection_id}` exposes the full graph.
+- **Enhanced Playwright rendering** (`_fetch_playwright()`): Incremental scroll (8 passes to trigger lazy-loaded content), expanded interaction set — accordions (`details summary`, `.accordion-button`, `[data-bs-toggle='collapse']`), tabs (`[role='tab']`, `.nav-tab`), dropdowns (`.dropdown-toggle`), expand buttons (`.show-more`, `.read-more`). Each element is scrolled into view before click with 250ms settle time.
+- **BeautifulSoup4 extraction** (`_parse_html_bs4()`): When BS4 is available uses DOM tree traversal to extract title, meta tags, headings (H1–H6), navigation links from all `<nav>` elements, main content area (prefers `<main>`, `<article>`, `.content`), and strips noise elements. Falls back to `_parse_html_regex()`.
+- **Screenshot capture** (`_capture_screenshot()`): Full-page Playwright screenshots (JPEG 70% quality) stored to MinIO under `screenshots/` prefix or local fallback. Linked to `conn.screenshots[url]`.
+- **Stay-connected** (`services/website_crawler.py`): On crawl completion, status becomes `"active"` (not `"done"`) — connections remain live until manually disconnected. `_save_connections()` persists `active` status so connections survive server restarts.
+- **MinIO verified working** (`services/storage_service.py`): Bucket `uploaded-docs` confirmed; every admin file upload logs the storage key and backend name (`minio` or `local`). Docker container `minio_cf` running on port 9000.
+- **nav_pages counter** in `_conn_to_dict()` — shows how many pages are in the nav graph per connection.
+- **`GET /website/nav-graph/{connection_id}`** endpoint added (`app/api/website_routes.py`).
+
+### Changed
+- `services/website_crawler.py` — Imports: added `heapq`, `bs4 (optional)`, removed `deque` (replaced by heapq priority queue). `CrawlConnection` dataclass gains `nav_graph` and `screenshots` fields.
+- `services/website_crawler.py` — `_save_connections()` and `_load_connections()` now persist/restore `nav_graph`. Crawling/pending statuses saved as `"active"` not `"done"`.
+- `services/website_crawler.py` — `MAX_DEPTH` bumped from 5 → 6.
+- `frontend/src/components/WebsiteScraper.tsx` — Added `active` status handling (shown as "Live" with pulsing dot). Poll interval: 4s while crawling, 30s when all live, stops when no connections. Re-crawl button shows for `active` status. Nav pages counter shown from `nav_pages` field.
+- `frontend/src/pages/SignUp.tsx` — Admin signup path now shows "provisioned by system" note instead of link to admin signup route (which is blocked).
+- `app/api/routes.py` — Upload endpoint now logs storage backend and key name after successful MinIO store.
+
+### Infrastructure
+- Qdrant (`qdrant_cf`, port 6333), MinIO (`minio_cf`, port 9000), Redis (`redis_cf`, port 6379) — all Docker containers confirmed running.
+- Backend running: `uvicorn app.main:app` on port 8000 (SQLite primary DB, falls back from PostgreSQL gracefully).
+- Frontend running: Vite dev server on port 5173.
+
+---
+
+## [6.5.0] — 2026-04-15
+
+### Added
+- `frontend/src/pages/AdminLogin.tsx` — **Separate admin login portal**: dedicated page for admin authentication, styled with red accent; enforces `@nitcoinc.com` email domain client-side before submitting; links back to user login
+- `app/api/auth_routes.py` — `POST /auth/login/admin` endpoint: admin-only login that validates org email domain (`@nitcoinc.com`) and confirms `role == "admin"` before issuing tokens; standard `POST /auth/login` now blocks admin accounts with a 403
+- `app/services/auth_service.py` — `_enforce_admin_email()` helper + `ADMIN_EMAIL_DOMAIN` constant; admin registration now rejects any email not from the org domain at the service layer
+
+### Changed
+- `frontend/src/App.tsx` — Added `"admin-login"` page route; imports `AdminLogin` component
+- `frontend/src/pages/Login.tsx` — Added **Admin Portal** button at the bottom to navigate to the admin login page
+- `frontend/src/pages/SignUp.tsx` — Admin signup now validates `@nitcoinc.com` domain client-side; inline error shown on invalid email; submit button disabled until domain matches
+- `services/website_crawler.py` — **Crawl connections now persisted to `crawler_connections.json`**: `_save_connections()` called on connect, disconnect, and crawl completion; `_load_connections()` restores all active connections at startup — connections survive server restarts and page refreshes
+- `services/context_builder.py` — **Website metadata enriched in LLM context**: website chunks now include page title, direct URL, page type, navigation links, key stats, key people, and contact info as a structured header before the text body; each unique page URL is used as the diversity key so multiple pages from the same crawled site can appear in context; `MAX_PER_DOC` cap is 1 per unique page URL for website sources
+
+### Fixed
+- `services/context_builder.py` — `payload_map` lookup in backfill loop now uses the full payload dict (not just `file_name`) for consistency with the main loop
+
+---
+
+## [6.4.0] — 2026-04-15
+
+### Fixed
+- `frontend/vite.config.ts` — Added `/website` proxy entry; website scraper was returning **404** because the Vite dev server had no proxy rule for `/website/*` routes, causing all connect/status/disconnect calls to fail
+- `services/storage_service.py` + `app/api/routes.py` — **MinIO now active**: `minio` Python package installed; upload route now stores files to MinIO object storage (bucket auto-created on first use) in addition to local disk; `.env` credentials (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`) verified and working
+- `services/sharepoint_service.py` — **SharePoint upload progress**: new files are now immediately marked `indexed_status="indexing"` in the database before the ingest job runs, so the UI can show a progress indicator while files are being processed; `get_status()` now returns `pending_count` and `failed_count` per connection
+- `frontend/src/components/SharePoint.tsx` — Added **live indexing progress indicator**: spinning blue banner shows count of files being indexed from SharePoint; auto-polls every 5 s while any files are pending; amber warning when files fail; `FileText` + `Clock` icons added; `pollRef` cleanup on unmount
+- `frontend/src/components/DocumentUpload.tsx` — Removed **Async / Non-blocking** badge from the Document Processing Pipeline section
+
+### Changed
+- `app/api/routes.py` — Upload route now calls `get_storage_service().store()` (MinIO/S3) after saving locally; gracefully falls back with a warning if object storage is unavailable
+
+## [6.3.0] — 2026-04-14
+
+### Fixed
+- `services/hybrid_search.py` — **Query latency**: BM25 index TTL increased from 5 minutes to 1 hour; BM25 index refreshes now run in a **background thread** so stale-but-valid index is served to users during rebuild (zero latency penalty on warm queries); added `threading.Lock` around index reads for thread-safety
+- `services/agent_orchestrator.py` — **Query latency**: `_fetch_payload_map()` was running an extra Qdrant scroll (250 records) on **every single query** just to build a text→filename lookup; now reuses BM25 metadata (already in memory, zero I/O cost) and only falls back to a TTL-cached scroll (120s) when BM25 isn't warmed yet
+- `app/main.py` — **First-query cold start**: warmup now pre-loads both `Phase1RAG` (embedding model + reranker, ~26s) **and** `AgentOrchestrator` so the first user query is served from warm models, not during model loading
+- `app/api/admin_routes.py` — `GET /admin/cache/status` import fixed (`services.phase1_rag._get_rag` → `app.services.rag_service._get_rag`); now returns actual backend name, hit/miss stats, and memory usage
+
+### Changed
+- `app/api/admin_routes.py` — `GET /admin/analytics` SQL fixed for PostgreSQL compatibility: `DATE('now','-13 days')` → `CURRENT_DATE - INTERVAL '13 days'`; `STRFTIME('%H', ...)` → `EXTRACT(HOUR FROM created_at)::int`; DB dialect detected at runtime via `engine.url`
+
+---
+
+## [6.2.0] — 2026-04-14
+
+### Added
+- `services/website_crawler.py` — **Major upgrade**: JSON-LD structured data extraction, stats extraction (numeric patterns like "150+ Employees"), leadership/people extraction (JSON-LD Person schema + heuristic HTML section parsing), contact info (phone/email/address), OpenGraph tags, navigation structure mapping, Playwright JS rendering (auto-detected, falls back to requests), BFS depth limit (MAX_DEPTH=5), interaction engine for accordions/tabs (Playwright), sitemap index files followed recursively, robots.txt sitemap directives parsed, structure-aware chunking (500–800 chars, 100 overlap), batch embedding (64 chunks/call), unified metadata schema (`source_type`, `source_name`, `url`, `page_type`, `section`, `content_hash`, `version`, `timestamp`, `stats`, `people`, `contact_phone`, `contact_email`, `nav_links`, `og_title`, `connection_id`, `org_name`)
+- `services/scheduler_service.py` — **New**: Centralized scheduling service with source registry (persisted to `scheduler_registry.json` across restarts), multi-level scheduling (high=10min, medium=2hr, low=24hr), priority queue (high before medium before low), sitemap lastmod + content hash change detection, retry with exponential backoff (1m→5m→30m), idempotent processing, worker pool (3 workers), pause/resume per source, admin trigger APIs, auto-sync with WebsiteCrawler connections
+- `services/storage_service.py` — **New**: Abstracted object storage — MinIO/S3 primary (presigned URLs, bucket auto-create), local filesystem fallback; used for raw files, HTML snapshots, processed text; keeps Postgres and Qdrant lean
+- `services/cache_service.py` — **Redis persistence**: Cache now tries Redis first (survives server restarts), falls back to in-memory LRU if Redis unavailable; JSON serialization for all value types; backend reported in `/admin/cache/status`
+- `core/config.py` — Added `redis_url`, `minio_endpoint`, `minio_access_key`, `minio_secret_key`, `minio_bucket`, `minio_secure` settings
+- `app/main.py` — Added `_start_scheduler()` startup hook; scheduler boots alongside ingest queue and health monitor
+- `app/api/admin_routes.py` — New endpoints: `GET /admin/scheduler/status`, `POST /admin/scheduler/trigger`, `POST /admin/scheduler/pause/{id}`, `POST /admin/scheduler/resume/{id}`, `DELETE /admin/scheduler/source/{id}`, `GET /admin/storage/status`, `GET /admin/cache/status`
+- `app/api/website_routes.py` — On connect: auto-registers source with scheduler for 2-hour periodic re-crawls
+
+### Changed
+- `services/phase1_llm.py` — System prompt updated: navigation/links rule added — model now provides direct URLs from indexed website content when user asks for page links or navigation steps; nav-link instructions grounded-only (never invents URLs)
+- `frontend/src/components/ChatInterface.tsx` — Stop button fix: added `streamStoppedRef` flag so clicking Stop also halts the visual streaming animation mid-reveal (not just the HTTP fetch); `streamStoppedRef` reset to `false` on each new message send
+- `README.md` — Complete rewrite: polyglot storage architecture diagram, full env variable table, API reference table, project structure, Quick Start with Docker commands, data sources table, scheduler priority table
+
+---
+
+## [6.1.0] — 2026-04-14
+
+### Added
+- `services/website_crawler.py` — **Organization Website Scraper**: BFS deep-crawler with sitemap.xml seeding (up to 500 pages), SHA-256 content hashing for deduplication, incremental updates (delete old vectors then insert new), page type classification (home/about/service/blog/team/contact/careers/testimonials), HTML link extraction, polite crawl delay; chunks pages into Qdrant `phase1_documents` collection with `source_type="website"` metadata (`url`, `page_type`, `section`, `content_hash`, `version`, `timestamp`, `connection_id`)
+- `app/api/website_routes.py` — REST API: `POST /website/connect` (start background crawl, returns `connection_id` immediately), `POST /website/disconnect` (stop + optional vector deletion), `GET /website/status` (all connections), `GET /website/status/{id}` (single), `POST /website/refresh/{id}` (incremental re-crawl)
+- `app/main.py` — registered `website_router` on startup
+- `frontend/src/components/WebsiteScraper.tsx` — new admin UI page: URL + org name input, crawl progress bar (pages done/found/%), status badges (Pending/Crawling/Done/Error), auto-polls every 3 seconds while crawling, per-connection stats (pages, chunks, elapsed time), Re-crawl / Stop / Remove / Remove+delete vectors actions
+- `frontend/src/components/Sidebar.tsx` — added "Website Scraper" nav item with Globe icon (admin-only)
+- `frontend/src/pages/Dashboard.tsx` — wired `website` view: type, label, subtitle, admin guard, ErrorBoundary render
+
+---
+
 ## [6.0.2] — 2026-04-13
 
 ### Added

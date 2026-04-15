@@ -322,8 +322,8 @@ export default function Landing({ navigate }: { navigate: NavigateFn }) {
             <button onClick={() => navigate("signup-user")} className="inline-flex items-center gap-2 px-8 py-3.5 bg-brand-600 hover:bg-brand-500 text-white font-semibold rounded-xl transition">
               Get started for free <ChevronRight size={18} />
             </button>
-            <button onClick={() => navigate("signup-admin")} className="inline-flex items-center gap-2 px-8 py-3.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 font-semibold rounded-xl transition">
-              <Shield size={16} /> Register as Admin
+            <button onClick={() => navigate("admin-login")} className="inline-flex items-center gap-2 px-8 py-3.5 bg-white/5 hover:bg-white/10 text-white border border-white/10 font-semibold rounded-xl transition">
+              <Shield size={16} /> Admin Sign In
             </button>
           </div>
         </div>

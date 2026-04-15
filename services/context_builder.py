@@ -109,18 +109,30 @@ class ContextBuilder:
                 deduped.append((text, score))
 
         # ── 3. Source diversity (max MAX_PER_DOC per file) ─────────────────
+        # Website pages each have a distinct URL — treat each URL as its own
+        # document so we can pull multiple pages from the same crawled site.
         doc_counts: Dict[str, int] = {}
         diverse: List[Tuple[str, float, str]] = []  # (text, score, file_name)
 
         for text, score in deduped:
-            fname = "unknown"
+            payload_entry = {}
             if payload_map:
-                fname = payload_map.get(text[:100], {}).get("file_name", "unknown")
+                payload_entry = payload_map.get(text[:100], {})
+            fname = payload_entry.get("file_name", "unknown")
 
-            count = doc_counts.get(fname, 0)
-            if count < MAX_PER_DOC:
+            # For website chunks, use the page URL as diversity key so each
+            # unique page is counted separately (not lumped under one site).
+            if payload_entry.get("source_type") == "website":
+                diversity_key = payload_entry.get("url", fname)
+                cap = 1          # one chunk per unique page URL
+            else:
+                diversity_key = fname
+                cap = MAX_PER_DOC
+
+            count = doc_counts.get(diversity_key, 0)
+            if count < cap:
                 diverse.append((text, score, fname))
-                doc_counts[fname] = count + 1
+                doc_counts[diversity_key] = count + 1
 
             if len(diverse) >= MAX_CHUNKS:
                 break
@@ -130,9 +142,8 @@ class ContextBuilder:
             existing = {t for t, _, _ in diverse}
             for text, score in deduped:
                 if text not in existing:
-                    fname = "unknown"
-                    if payload_map:
-                        fname = payload_map.get(text[:100], {}).get("file_name", "unknown")
+                    p = payload_map.get(text[:100], {}) if payload_map else {}
+                    fname = p.get("file_name", "unknown")
                     diverse.append((text, score, fname))
                     existing.add(text)
                 if len(diverse) >= MAX_CHUNKS:
@@ -145,15 +156,61 @@ class ContextBuilder:
 
         for i, (text, score, fname) in enumerate(diverse):
             compressed = _key_sentences(text, per_chunk_budget)
-            parts.append(compressed)
-            # Build source attribution
+
+            # ── Website metadata enrichment ───────────────────────────────
+            # Inject rich page metadata so the LLM can answer navigation,
+            # org-info, contact, and directory queries accurately.
             payload = {}
             if payload_map:
                 payload = payload_map.get(text[:100], {})
+
+            if payload.get("source_type") == "website":
+                header_lines = []
+                page_url   = payload.get("url", "")
+                page_title = payload.get("title") or payload.get("og_title", "")
+                page_type  = payload.get("page_type", "")
+                org_name   = payload.get("org_name") or payload.get("source_name", "")
+                nav_links  = payload.get("nav_links", "")
+                stats      = payload.get("stats", "")
+                people     = payload.get("people", "")
+                contact_ph = payload.get("contact_phone", "")
+                contact_em = payload.get("contact_email", "")
+
+                if page_title:
+                    label = f"[Website] {org_name}: {page_title}" if org_name else f"[Website] {page_title}"
+                    header_lines.append(label)
+                if page_url:
+                    header_lines.append(f"URL: {page_url}")
+                if page_type:
+                    header_lines.append(f"Page type: {page_type}")
+                if nav_links:
+                    header_lines.append(f"Navigation: {nav_links}")
+                if stats:
+                    header_lines.append(f"Key stats: {stats}")
+                if people:
+                    header_lines.append(f"Key people: {people}")
+                if contact_ph or contact_em:
+                    contact_parts = []
+                    if contact_ph:
+                        contact_parts.append(f"Phone: {contact_ph}")
+                    if contact_em:
+                        contact_parts.append(f"Email: {contact_em}")
+                    header_lines.append("Contact: " + " | ".join(contact_parts))
+
+                if header_lines:
+                    compressed = "\n".join(header_lines) + "\n\n" + compressed
+
+            # ── Source attribution ─────────────────────────────────────────
             line_s = payload.get("line_start")
-            src_name = fname if fname != "unknown" else f"Document chunk {i+1}"
-            if line_s:
-                src_name = f"{fname} (line {line_s})"
+            page_url = payload.get("url", "")
+            if payload.get("source_type") == "website" and page_url:
+                src_name = page_url
+            elif fname != "unknown":
+                src_name = f"{fname} (line {line_s})" if line_s else fname
+            else:
+                src_name = f"Document chunk {i+1}"
+
+            parts.append(compressed)
             sources.append({
                 "name": src_name,
                 "relevance": round(min(0.95 - i * 0.04, 0.5), 2),

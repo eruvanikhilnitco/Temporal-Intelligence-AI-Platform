@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { MessageSquare, Upload, Shield, BarChart3, Settings, Activity, Network, Link2, ChevronLeft, ChevronRight } from "lucide-react";
+import { MessageSquare, Upload, Shield, BarChart3, Settings, Activity, Network, Link2, Globe, ChevronLeft, ChevronRight } from "lucide-react";
 
-type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph" | "sharepoint";
+type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph" | "sharepoint" | "website";
 
 interface SidebarProps {
   activeView: View;
@@ -20,6 +20,7 @@ const USER_NAV = [
 const ADMIN_NAV = [
   { id: "upload" as View, label: "Upload", icon: Upload },
   { id: "sharepoint" as View, label: "SharePoint", icon: Link2 },
+  { id: "website" as View, label: "Website Scraper", icon: Globe },
   { id: "analytics" as View, label: "Analytics", icon: BarChart3 },
   { id: "settings" as View, label: "Settings", icon: Settings },
   { id: "admin" as View, label: "Admin Panel", icon: Shield },

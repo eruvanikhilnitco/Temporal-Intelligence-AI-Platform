@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Link2, Link2Off, Loader2, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Link2, Link2Off, Loader2, CheckCircle2, AlertCircle, RefreshCw, FileText, Clock } from "lucide-react";
 import axios from "axios";
 
 interface Connection {
@@ -8,6 +8,8 @@ interface Connection {
   site_display_name: string;
   status: string;
   file_count: number;
+  pending_count: number;
+  failed_count: number;
   webhooks: number;
   last_sync_at: string | null;
   connected_at: string | null;
@@ -22,6 +24,7 @@ export default function SharePoint() {
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const token = localStorage.getItem("accessToken");
   const headers = { Authorization: `Bearer ${token}` };
@@ -29,7 +32,19 @@ export default function SharePoint() {
   // Load existing connections on mount
   useEffect(() => {
     fetchStatus();
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
+
+  // Auto-poll every 5s while any connection has pending/indexing files
+  useEffect(() => {
+    const hasPending = connections.some(c => (c.pending_count ?? 0) > 0);
+    if (hasPending && !pollRef.current) {
+      pollRef.current = setInterval(fetchStatus, 5000);
+    } else if (!hasPending && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, [connections]);
 
   async function fetchStatus() {
     setLoadingStatus(true);
@@ -199,7 +214,9 @@ export default function SharePoint() {
 
                   {/* Stats row */}
                   <div className="flex items-center gap-4 text-xs text-gray-500">
-                    <span>{conn.file_count} file{conn.file_count !== 1 ? "s" : ""} indexed</span>
+                    <span className="flex items-center gap-1">
+                      <FileText size={11} />{conn.file_count} file{conn.file_count !== 1 ? "s" : ""} indexed
+                    </span>
                     {conn.webhooks > 0 && (
                       <span className="text-emerald-600">
                         {conn.webhooks} webhook{conn.webhooks !== 1 ? "s" : ""}
@@ -214,9 +231,27 @@ export default function SharePoint() {
                     )}
                   </div>
 
+                  {/* Indexing progress — shown when new files are being processed */}
+                  {(conn.pending_count ?? 0) > 0 && (
+                    <div className="mt-2 flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-1.5">
+                      <Loader2 size={11} className="animate-spin shrink-0" />
+                      <span>
+                        Indexing {conn.pending_count} new file{conn.pending_count !== 1 ? "s" : ""} from SharePoint…
+                      </span>
+                      <Clock size={11} className="ml-auto shrink-0 opacity-60" />
+                    </div>
+                  )}
+
+                  {/* Failed files warning */}
+                  {(conn.failed_count ?? 0) > 0 && (
+                    <div className="mt-1 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-1.5">
+                      {conn.failed_count} file{conn.failed_count !== 1 ? "s" : ""} failed to index — check logs
+                    </div>
+                  )}
+
                   {/* Error banner if last sync errored */}
                   {conn.last_error && (
-                    <p className="mt-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-1.5 truncate">
+                    <p className="mt-1 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-1.5 truncate">
                       {conn.last_error}
                     </p>
                   )}

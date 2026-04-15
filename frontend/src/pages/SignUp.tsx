@@ -35,10 +35,19 @@ export default function SignUp({ navigate, role }: SignUpProps) {
 
   const isAdmin = role === "admin";
   const backendRole = isAdmin ? "admin" : "client";
+  const ORG_DOMAIN = "nitcoinc.com";
+  const adminEmailOk =
+    !isAdmin ||
+    !formData.email ||
+    formData.email.toLowerCase().endsWith(`@${ORG_DOMAIN}`);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    if (isAdmin && !adminEmailOk) {
+      setError(`Admin accounts require an organisation email (@${ORG_DOMAIN}).`);
+      return;
+    }
     setLoading(true);
     try {
       const endpoint = isAdmin ? "/auth/signup/admin" : "/auth/signup/user";
@@ -145,9 +154,20 @@ export default function SignUp({ navigate, role }: SignUpProps) {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-400 mb-1.5">Email address</label>
-              <input type="email" placeholder="you@company.com" value={formData.email} onChange={change("email")}
-                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/40 transition"
+              <input type="email"
+                placeholder={isAdmin ? `you@${ORG_DOMAIN}` : "you@company.com"}
+                value={formData.email} onChange={change("email")}
+                className={`w-full bg-gray-900 border rounded-xl px-4 py-2.5 text-white placeholder-gray-600 text-sm focus:outline-none transition
+                  ${isAdmin && formData.email && !adminEmailOk
+                    ? "border-red-500/60 focus:border-red-500 focus:ring-1 focus:ring-red-500/40"
+                    : "border-gray-700 focus:border-brand-500 focus:ring-1 focus:ring-brand-500/40"}`}
                 required />
+              {isAdmin && formData.email && !adminEmailOk && (
+                <p className="mt-1 text-xs text-red-400">Must be an @{ORG_DOMAIN} address</p>
+              )}
+              {isAdmin && (!formData.email || adminEmailOk) && (
+                <p className="mt-1 text-xs text-gray-600">Requires @{ORG_DOMAIN} email</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-400 mb-1.5">Password</label>
@@ -161,7 +181,7 @@ export default function SignUp({ navigate, role }: SignUpProps) {
               </div>
               <PasswordStrength password={formData.password} />
             </div>
-            <button type="submit" disabled={loading || success}
+            <button type="submit" disabled={loading || success || (isAdmin && !adminEmailOk && !!formData.email)}
               className={`w-full disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2.5 rounded-xl transition flex items-center justify-center gap-2 text-sm ${isAdmin ? "bg-red-600 hover:bg-red-500" : "bg-brand-600 hover:bg-brand-500"}`}>
               {loading ? <Loader2 size={16} className="animate-spin" /> : (isAdmin ? "Create Admin Account" : "Create Account")}
             </button>
@@ -178,18 +198,13 @@ export default function SignUp({ navigate, role }: SignUpProps) {
             <button onClick={() => navigate("login")} className="text-brand-400 hover:text-brand-300 font-medium">Sign in</button>
           </div>
 
-          {/* Switch signup type */}
-          <div className="mt-3 text-center text-sm text-gray-500">
-            {isAdmin ? (
-              <>Looking for user access?{" "}
-                <button onClick={() => navigate("signup-user")} className="text-brand-400 hover:text-brand-300 font-medium">Register as User</button>
-              </>
-            ) : (
-              <>Need admin access?{" "}
-                <button onClick={() => navigate("signup-admin")} className="text-red-400 hover:text-red-300 font-medium">Register as Admin</button>
-              </>
-            )}
-          </div>
+          {/* Admin accounts are provisioned by system — no self-signup */}
+          {isAdmin ? (
+            <div className="mt-3 text-center text-sm text-gray-500">
+              Looking for user access?{" "}
+              <button onClick={() => navigate("signup-user")} className="text-brand-400 hover:text-brand-300 font-medium">Register as User</button>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

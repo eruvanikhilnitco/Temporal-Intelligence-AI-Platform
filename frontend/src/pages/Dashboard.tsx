@@ -8,6 +8,7 @@ import AnalyticsDashboard from "../components/Analytics";
 import SettingsPage from "../components/Settings";
 import KnowledgeGraphUI from "../components/KnowledgeGraphUI";
 import SharePoint from "../components/SharePoint";
+import WebsiteScraper from "../components/WebsiteScraper";
 import NotificationsPanel from "../components/NotificationsPanel";
 import { NavigateFn } from "../App";
 import axios from "axios";
@@ -39,7 +40,7 @@ class ErrorBoundary extends Component<
   }
 }
 
-type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph" | "sharepoint";
+type View = "chat" | "upload" | "admin" | "analytics" | "settings" | "graph" | "sharepoint" | "website";
 
 const VIEW_LABELS: Record<View, string> = {
   chat: "Chat",
@@ -49,10 +50,11 @@ const VIEW_LABELS: Record<View, string> = {
   settings: "Settings",
   graph: "Knowledge Graph",
   sharepoint: "SharePoint",
+  website: "Website Scraper",
 };
 
 // Views restricted to admin only
-const ADMIN_ONLY_VIEWS: View[] = ["upload", "admin", "analytics", "settings", "graph", "sharepoint"];
+const ADMIN_ONLY_VIEWS: View[] = ["upload", "admin", "analytics", "settings", "graph", "sharepoint", "website"];
 
 export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
   const [view, setView] = useState<View>("chat");
@@ -131,6 +133,7 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
               {view === "settings"    && "Configuration & API keys"}
               {view === "graph"       && "Entity relationships from your documents"}
               {view === "sharepoint"  && "Event-driven sync — stays connected until you disconnect"}
+              {view === "website"     && "BFS deep-crawl with sitemap seeding and incremental updates"}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -196,6 +199,7 @@ export default function Dashboard({ navigate }: { navigate: NavigateFn }) {
           {view === "settings"    && isAdmin && <ErrorBoundary label="Settings"><SettingsPage /></ErrorBoundary>}
           {view === "graph"       && isAdmin && <ErrorBoundary label="Knowledge Graph"><KnowledgeGraphUI /></ErrorBoundary>}
           {view === "sharepoint"  && isAdmin && <ErrorBoundary label="SharePoint"><SharePoint /></ErrorBoundary>}
+          {view === "website"     && isAdmin && <ErrorBoundary label="Website Scraper"><WebsiteScraper /></ErrorBoundary>}
         </div>
       </main>
     </div>

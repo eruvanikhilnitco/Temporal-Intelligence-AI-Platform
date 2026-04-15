@@ -16,6 +16,7 @@ in memory. It refreshes automatically when the collection size grows by >5%.
 
 import logging
 import re
+import threading
 import time
 from typing import List, Optional, Tuple, Dict
 
@@ -45,6 +46,8 @@ class HybridSearchService:
         self._bm25_meta: List[dict] = []     # parallel metadata list
         self._bm25_built_at = 0.0
         self._bm25_collection_size = 0
+        self._bm25_lock = threading.Lock()
+        self._bm25_rebuilding = False        # background rebuild in progress
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -132,28 +135,65 @@ class HybridSearchService:
     # ── BM25 search ────────────────────────────────────────────────────────────
 
     def _ensure_bm25_index(self, collection_name: str):
-        """Build or refresh the BM25 index from Qdrant payload."""
-        try:
-            from rank_bm25 import BM25Okapi
-            qdrant = self.embedder.qdrant
+        """Build or refresh the BM25 index from Qdrant payload.
 
-            # Check if refresh needed (collection grew by >5% or >5 minutes)
+        First call: blocks briefly to build index so first query has BM25.
+        Subsequent refreshes: run in a background thread — stale index is
+        used until the new one is ready (no query-latency penalty).
+        """
+        try:
+            from rank_bm25 import BM25Okapi  # noqa: F401 — check import early
+        except ImportError:
+            return
+
+        try:
+            qdrant = self.embedder.qdrant
             try:
                 info = qdrant.get_collection(collection_name)
                 current_size = getattr(info, "points_count", 0) or 0
             except Exception:
                 current_size = 0
 
-            needs_rebuild = (
-                self._bm25 is None
-                or current_size > self._bm25_collection_size * 1.05
-                or (time.time() - self._bm25_built_at) > 300
-            )
+            # Decide whether a rebuild is needed
+            with self._bm25_lock:
+                needs_rebuild = (
+                    self._bm25 is None
+                    or current_size > self._bm25_collection_size * 1.05
+                    or (time.time() - self._bm25_built_at) > 3600  # 1 hour TTL
+                )
+                already_running = self._bm25_rebuilding
+                has_index = self._bm25 is not None
 
             if not needs_rebuild:
                 return
 
-            # Fetch all chunks from Qdrant (paginated to handle large collections)
+            if already_running:
+                # Background rebuild already in flight — use stale index
+                return
+
+            if has_index:
+                # We have a usable (stale) index — rebuild in background
+                with self._bm25_lock:
+                    self._bm25_rebuilding = True
+                t = threading.Thread(
+                    target=self._rebuild_bm25,
+                    args=(collection_name, current_size),
+                    daemon=True,
+                )
+                t.start()
+            else:
+                # First build — do it synchronously so first query has BM25
+                self._rebuild_bm25(collection_name, current_size)
+
+        except Exception as e:
+            logger.warning("[Hybrid] BM25 ensure failed: %s", e)
+
+    def _rebuild_bm25(self, collection_name: str, current_size: int):
+        """Fetch all chunks from Qdrant and build a fresh BM25 index."""
+        try:
+            from rank_bm25 import BM25Okapi
+            qdrant = self.embedder.qdrant
+
             all_docs: List[str] = []
             all_meta: List[dict] = []
             offset = None
@@ -180,31 +220,40 @@ class HybridSearchService:
                 return
 
             tokenized = [_tokenize(d) for d in all_docs]
-            self._bm25 = BM25Okapi(tokenized)
-            self._bm25_docs = all_docs
-            self._bm25_meta = all_meta
-            self._bm25_built_at = time.time()
-            self._bm25_collection_size = current_size
+            new_index = BM25Okapi(tokenized)
+
+            with self._bm25_lock:
+                self._bm25 = new_index
+                self._bm25_docs = all_docs
+                self._bm25_meta = all_meta
+                self._bm25_built_at = time.time()
+                self._bm25_collection_size = current_size
+                self._bm25_rebuilding = False
+
             logger.info("[Hybrid] BM25 index built: %d docs", len(all_docs))
 
         except Exception as e:
-            logger.warning("[Hybrid] BM25 index build failed: %s", e)
-            self._bm25 = None
+            logger.warning("[Hybrid] BM25 rebuild failed: %s", e)
+            with self._bm25_lock:
+                self._bm25_rebuilding = False
 
     def _bm25_search(
         self, query: str, top_k: int, collection_name: str
     ) -> List[Tuple[str, float]]:
         """Returns [(text, score)] from BM25 keyword search."""
         self._ensure_bm25_index(collection_name)
-        if self._bm25 is None or not self._bm25_docs:
+        with self._bm25_lock:
+            bm25 = self._bm25
+            docs = list(self._bm25_docs)
+        if bm25 is None or not docs:
             return []
         try:
             tokens = _tokenize(query)
             if not tokens:
                 return []
-            scores = self._bm25.get_scores(tokens)
+            scores = bm25.get_scores(tokens)
             # Pair with texts, sort descending, return top_k
-            ranked = sorted(zip(self._bm25_docs, scores), key=lambda x: x[1], reverse=True)
+            ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
             # Filter zero-score results
             ranked = [(t, s) for t, s in ranked if s > 0]
             return ranked[:top_k]

@@ -213,3 +213,23 @@ class EmbeddingService:
         except Exception as e:
             logger.error(f"Similarity search failed: {e}")
             return []
+
+
+# ── Singleton accessor (used by website crawler and other services) ────────────
+_embedding_instance: Optional["EmbeddingService"] = None
+_embedding_lock = __import__("threading").Lock()
+
+
+def get_embedding_service() -> Optional["EmbeddingService"]:
+    """Return (or create) the process-wide EmbeddingService singleton."""
+    global _embedding_instance
+    if _embedding_instance is not None:
+        return _embedding_instance
+    with _embedding_lock:
+        if _embedding_instance is None:
+            try:
+                _embedding_instance = EmbeddingService()
+            except Exception as e:
+                logger.error(f"[EmbeddingService] Failed to create singleton: {e}")
+                return None
+    return _embedding_instance

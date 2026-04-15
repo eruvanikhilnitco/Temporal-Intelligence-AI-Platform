@@ -273,12 +273,21 @@ class SharePointService:
                 file_count = db.query(SharePointFile).filter_by(
                     connection_id=c.id, indexed_status="indexed"
                 ).count()
+                pending_count = db.query(SharePointFile).filter(
+                    SharePointFile.connection_id == c.id,
+                    SharePointFile.indexed_status.in_(["pending", "indexing"]),
+                ).count()
+                failed_count = db.query(SharePointFile).filter_by(
+                    connection_id=c.id, indexed_status="failed"
+                ).count()
                 result.append({
                     "id": c.id,
                     "site_url": c.site_url,
                     "site_display_name": c.site_display_name,
                     "status": c.status,
                     "file_count": file_count,
+                    "pending_count": pending_count,
+                    "failed_count": failed_count,
                     "webhooks": len(c.webhook_subscription_ids or []),
                     "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
                     "connected_at": c.connected_at.isoformat() if c.connected_at else None,
@@ -527,6 +536,29 @@ class SharePointService:
 
         new_version = (existing.version + 1) if existing else 1
 
+        # Mark as "indexing" immediately so the UI shows progress while ingest runs
+        if existing:
+            existing.indexed_status = "indexing"
+            existing.updated_at = datetime.utcnow()
+        else:
+            pre_record = SharePointFile(
+                connection_id=conn.id,
+                sharepoint_file_id=item_id,
+                file_name=name,
+                folder_path=folder_path,
+                drive_id=drive_id,
+                site_id=conn.site_id,
+                last_modified=last_modified,
+                content_hash=content_hash,
+                version=new_version,
+                indexed_status="indexing",
+                file_size_bytes=size,
+                chunk_count=0,
+            )
+            db.add(pre_record)
+            existing = pre_record
+        db.commit()
+
         # Write to temp dir using original filename so ingest_file stores the real name
         ext = os.path.splitext(name)[1].lower()
         tmp_dir = tempfile.mkdtemp(prefix="sp_ingest_")
@@ -535,23 +567,30 @@ class SharePointService:
             f.write(content)
 
         try:
-            from app.services.rag_service import ingest_file, _get_rag
-            # Wait up to 120s for RAG to become ready (model loading on startup)
-            _rag_wait = 0
-            while _get_rag() is None and _rag_wait < 120:
-                logger.info("[SP Ingest] RAG not ready, waiting… (%ds)", _rag_wait)
-                time.sleep(5)
-                _rag_wait += 5
-            if _get_rag() is None:
-                raise RuntimeError("RAG service unavailable after 120s wait — embedding model may have failed to load")
-
-            ingest_file(
-                tmp_path,
-                sharepoint_file_id=item_id,
-                sharepoint_folder_path=folder_path,
-                version=new_version,
+            # ── Route through background ingest queue so UI shows "in progress" ──
+            from services.ingest_queue import get_ingest_queue
+            q = get_ingest_queue()
+            job_id = q.submit(
+                file_path=tmp_path,
+                original_filename=name,
+                tenant_id=getattr(conn, "tenant_id", None),
             )
-            logger.info("[SP Ingest] Ingested: %s (v%d)", name, new_version)
+            logger.info("[SP Ingest] Queued via ingest_queue: %s → job %s", name, job_id)
+
+            # Wait for ingest_queue job to complete (SP ingest must be synchronous
+            # so we can update metadata registry and delete old vectors after)
+            deadline = time.time() + 180
+            while time.time() < deadline:
+                status = q.status(job_id)
+                if status.get("status") in ("done", "error"):
+                    break
+                time.sleep(1)
+
+            job_status = q.status(job_id)
+            if job_status.get("status") == "error":
+                raise RuntimeError(f"Ingest failed: {job_status.get('error', 'unknown')}")
+
+            logger.info("[SP Ingest] Ingested via queue: %s (v%d)", name, new_version)
 
             # After successful ingest of new version, delete old vectors
             if is_update and existing:

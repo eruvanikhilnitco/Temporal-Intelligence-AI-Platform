@@ -7,12 +7,28 @@ from app.schemas.auth import UserSignUp, UserLogin, UserResponse
 
 logger = logging.getLogger(__name__)
 
+# Organisation email domain — only this domain may register/login as admin
+ADMIN_EMAIL_DOMAIN = "nitcoinc.com"
+
 
 class AuthService:
+    @staticmethod
+    def _enforce_admin_email(email: str):
+        """Raise ValueError if the email is not from the org domain."""
+        domain = email.split("@")[-1].lower() if "@" in email else ""
+        if domain != ADMIN_EMAIL_DOMAIN:
+            raise ValueError(
+                f"Admin accounts require an organisation email (@{ADMIN_EMAIL_DOMAIN})."
+            )
+
     @staticmethod
     def register_user(db: Session, user_data: UserSignUp) -> UserResponse:
         """Register a new user"""
         try:
+            # Admin accounts must use the org email domain
+            if getattr(user_data, "role", None) == "admin":
+                AuthService._enforce_admin_email(user_data.email)
+
             # Check if user exists
             existing = db.query(User).filter(User.email == user_data.email).first()
             if existing:

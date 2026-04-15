@@ -186,12 +186,16 @@ def get_analytics(
     """Return analytics data — batched into minimal DB round-trips."""
     from sqlalchemy import text
 
+    # ── Detect PostgreSQL vs SQLite for query syntax ──────────────────────────
+    from app.db import engine as _engine
+    _is_pg = "postgresql" in str(_engine.url)
+
     # ── Single-pass aggregate query over ChatLog ──────────────────────────────
     agg = db.execute(text(
         "SELECT COUNT(*) as total, "
         "AVG(latency_ms) as avg_lat, "
         "SUM(CASE WHEN latency_ms < 50 THEN 1 ELSE 0 END) as cache_hits, "
-        "SUM(CASE WHEN graph_used = 1 THEN 1 ELSE 0 END) as graph_hits, "
+        "SUM(CASE WHEN graph_used = true THEN 1 ELSE 0 END) as graph_hits, "
         "AVG(confidence) as avg_conf "
         "FROM chat_logs"
     )).fetchone()
@@ -207,26 +211,44 @@ def get_analytics(
     active_rules   = db.query(Rule).filter(Rule.active == True).count()
     security_events = db.query(SecurityEvent).count()
 
-    # Daily queries — one GROUP BY query instead of 14 individual queries
-    daily_rows = db.execute(text(
-        "SELECT DATE(created_at) as d, COUNT(*) as n "
-        "FROM chat_logs "
-        "WHERE created_at >= DATE('now','-13 days') "
-        "GROUP BY DATE(created_at)"
-    )).fetchall()
+    # Daily queries — PostgreSQL vs SQLite compatible
+    if _is_pg:
+        daily_rows = db.execute(text(
+            "SELECT DATE(created_at) as d, COUNT(*) as n "
+            "FROM chat_logs "
+            "WHERE created_at >= CURRENT_DATE - INTERVAL '13 days' "
+            "GROUP BY DATE(created_at)"
+        )).fetchall()
+    else:
+        daily_rows = db.execute(text(
+            "SELECT DATE(created_at) as d, COUNT(*) as n "
+            "FROM chat_logs "
+            "WHERE created_at >= DATE('now','-13 days') "
+            "GROUP BY DATE(created_at)"
+        )).fetchall()
+
     daily_map = {str(r[0]): r[1] for r in daily_rows}
     daily = [
         daily_map.get((datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d"), 0)
         for i in range(13, -1, -1)
     ]
 
-    # Hourly queries — one GROUP BY query instead of 24
-    hourly_rows = db.execute(text(
-        "SELECT CAST(STRFTIME('%H', created_at) AS INTEGER) as h, COUNT(*) as n "
-        "FROM chat_logs "
-        "WHERE DATE(created_at) = DATE('now') "
-        "GROUP BY h"
-    )).fetchall()
+    # Hourly queries — PostgreSQL vs SQLite compatible
+    if _is_pg:
+        hourly_rows = db.execute(text(
+            "SELECT EXTRACT(HOUR FROM created_at)::int as h, COUNT(*) as n "
+            "FROM chat_logs "
+            "WHERE DATE(created_at) = CURRENT_DATE "
+            "GROUP BY h"
+        )).fetchall()
+    else:
+        hourly_rows = db.execute(text(
+            "SELECT CAST(STRFTIME('%H', created_at) AS INTEGER) as h, COUNT(*) as n "
+            "FROM chat_logs "
+            "WHERE DATE(created_at) = DATE('now') "
+            "GROUP BY h"
+        )).fetchall()
+
     hourly_map = {r[0]: r[1] for r in hourly_rows}
     hourly = [hourly_map.get(h, 0) for h in range(24)]
 
@@ -1058,3 +1080,116 @@ def get_service_health(current_user: dict = Depends(require_admin)):
     """
     from services.health_monitor import get_health_status
     return get_health_status()
+
+
+# ── Scheduler admin endpoints ──────────────────────────────────────────────────
+
+class SchedulerTriggerRequest(BaseModel):
+    source_id: str
+
+
+class SchedulerRegisterRequest(BaseModel):
+    url: str
+    source_type: str = "website"
+    priority: str = "medium"
+    tenant_id: str = ""
+
+
+@router.get("/scheduler/status")
+def scheduler_status(current_user: dict = Depends(require_admin)):
+    """Get full scheduler status: running, queue depth, all sources with next-run times."""
+    from services.scheduler_service import get_scheduler
+    return get_scheduler().get_status()
+
+
+@router.post("/scheduler/trigger")
+def scheduler_trigger(
+    req: SchedulerTriggerRequest,
+    current_user: dict = Depends(require_admin),
+):
+    """Manually trigger a full re-crawl for a specific source immediately."""
+    from services.scheduler_service import get_scheduler
+    ok = get_scheduler().trigger_full_crawl(req.source_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Source not found in scheduler registry")
+    return {"status": "triggered", "source_id": req.source_id}
+
+
+@router.post("/scheduler/pause/{source_id}")
+def scheduler_pause(
+    source_id: str,
+    current_user: dict = Depends(require_admin),
+):
+    """Pause scheduling for a source (won't trigger auto-updates)."""
+    from services.scheduler_service import get_scheduler
+    get_scheduler().pause_source(source_id)
+    return {"status": "paused", "source_id": source_id}
+
+
+@router.post("/scheduler/resume/{source_id}")
+def scheduler_resume(
+    source_id: str,
+    current_user: dict = Depends(require_admin),
+):
+    """Resume scheduling for a paused source (triggers immediately)."""
+    from services.scheduler_service import get_scheduler
+    get_scheduler().resume_source(source_id)
+    return {"status": "resumed", "source_id": source_id}
+
+
+@router.delete("/scheduler/source/{source_id}")
+def scheduler_unregister(
+    source_id: str,
+    current_user: dict = Depends(require_admin),
+):
+    """Remove a source from the scheduler registry (does not delete vectors)."""
+    from services.scheduler_service import get_scheduler
+    get_scheduler().unregister_source(source_id)
+    return {"status": "unregistered", "source_id": source_id}
+
+
+@router.get("/storage/status")
+def storage_status(current_user: dict = Depends(require_admin)):
+    """Return the active storage backend (minio or local) and config."""
+    from services.storage_service import get_storage_service
+    svc = get_storage_service()
+    return {
+        "backend":       svc.backend,
+        "description":   "MinIO object storage" if svc.backend == "minio" else "Local filesystem (dev mode)",
+        "recommendation": None if svc.backend == "minio" else "Set MINIO_ENDPOINT in .env to enable MinIO for production",
+    }
+
+
+@router.get("/cache/status")
+def cache_status(current_user: dict = Depends(require_admin)):
+    """Return cache backend and stats including live Redis key count."""
+    result: dict = {}
+    # Get in-process cache stats
+    try:
+        from app.services.rag_service import _get_rag
+        rag = _get_rag()
+        if rag and hasattr(rag, "cache"):
+            result = rag.cache.stats()
+            result["memory_kb"] = rag.cache.memory_usage_kb()
+    except Exception as e:
+        result = {"error": str(e)}
+
+    # Always probe Redis directly for live key count
+    try:
+        import redis as _redis
+        from core.config import get_settings
+        settings = get_settings()
+        redis_url = getattr(settings, "redis_url", "") or ""
+        if redis_url:
+            rc = _redis.from_url(redis_url, socket_timeout=1.0)
+            rc.ping()
+            cf_keys = rc.keys("cf:*")
+            result["redis_live"] = True
+            result["redis_cached_queries"] = len(cf_keys)
+            result["redis_sample_keys"] = [k.decode()[:80] for k in sorted(cf_keys)[:5]]
+            # Override backend name if Redis probe succeeded
+            result["backend"] = "redis"
+    except Exception:
+        result["redis_live"] = False
+
+    return result

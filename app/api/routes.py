@@ -581,7 +581,8 @@ async def upload_document(
             message="Document is identical to the existing version — no re-processing needed.",
         )
 
-    # Save file to disk
+    # Save file to disk (needed by ingest_queue which expects a local path)
+    UPLOAD_DIR.mkdir(exist_ok=True)
     dest = UPLOAD_DIR / file.filename
     try:
         dest.write_bytes(file_bytes)
@@ -591,6 +592,17 @@ async def upload_document(
                   user=current_user.get("email"), extra={"filename": file.filename})
         logger.error(f"File save failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to save file")
+
+    # Persist to MinIO/S3 object storage
+    try:
+        from services.storage_service import get_storage_service
+        import mimetypes
+        svc = get_storage_service()
+        content_type = mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
+        storage_key = svc.store(file_bytes, file.filename, content_type=content_type)
+        logger.info("[Upload] Stored '%s' to %s backend: %s", file.filename, svc.backend, storage_key)
+    except Exception as e:
+        logger.warning("[Upload] Object storage upload failed (non-fatal): %s", e)
 
     # Delete stale Qdrant chunks for updated documents
     if existing:

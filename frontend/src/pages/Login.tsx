@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
+import { Loader2, AlertCircle, Eye, EyeOff, Shield } from "lucide-react";
 import axios from "axios";
 import { NavigateFn } from "../App";
 
@@ -107,8 +107,14 @@ export default function Login({ navigate, defaultEmail }: { navigate: NavigateFn
             </button>
           </form>
 
-          <div className="mt-8 pt-6 border-t border-gray-800 text-center text-xs text-gray-500">
-            Protected by JWT + bcrypt · Zero-trust RBAC
+          <div className="mt-6 pt-6 border-t border-gray-800 flex flex-col items-center gap-3">
+            <button
+              onClick={() => navigate("admin-login")}
+              className="flex items-center gap-2 text-xs text-red-400 hover:text-red-300 border border-red-500/20 hover:border-red-500/40 bg-red-500/5 px-4 py-2 rounded-xl transition"
+            >
+              <Shield size={12} /> Admin Portal (org staff only)
+            </button>
+            <p className="text-xs text-gray-500">Protected by JWT + bcrypt · Zero-trust RBAC</p>
           </div>
         </div>
       </div>

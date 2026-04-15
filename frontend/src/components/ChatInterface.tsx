@@ -297,6 +297,7 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const streamStoppedRef = useRef<boolean>(false);
   const rateLimitTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -366,6 +367,13 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
     const chunkSize = 5;
     let revealed = "";
     for (let i = 0; i < fullText.length; i += chunkSize) {
+      // Respect stop button even during the visual streaming animation
+      if (streamStoppedRef.current) {
+        setMessages(prev => prev.map(m =>
+          m.id === msgId ? { ...m, content: revealed + " _[stopped]_", streaming: false } : m
+        ));
+        return;
+      }
       revealed += fullText.slice(i, i + chunkSize);
       setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: revealed, streaming: false } : m));
       await new Promise(r => setTimeout(r, 8));
@@ -373,6 +381,7 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
   }
 
   function handleStop() {
+    streamStoppedRef.current = true;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
   }
@@ -391,6 +400,7 @@ export default function ChatInterface({ userRole }: { userRole?: string }) {
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    streamStoppedRef.current = false;  // reset stop flag for each new message
 
     try {
       const token = localStorage.getItem("accessToken");

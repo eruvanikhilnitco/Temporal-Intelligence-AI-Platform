@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import Landing from "./pages/Landing";
 import SignUp from "./pages/SignUp";
 import Login from "./pages/Login";
+import AdminLogin from "./pages/AdminLogin";
 import ForgotPassword from "./pages/ForgotPassword";
 import Dashboard from "./pages/Dashboard";
 // Import client.ts to register global 401 interceptor
@@ -12,8 +13,8 @@ export type Page =
   | "landing"
   | "signup"
   | "signup-user"
-  | "signup-admin"
   | "login"
+  | "admin-login"
   | "forgot-password"
   | "dashboard";
 
@@ -62,8 +63,8 @@ export default function App() {
           case "landing":         return <Landing navigate={navigate} />;
           case "signup":          return <SignUp navigate={navigate} role="user" />;
           case "signup-user":     return <SignUp navigate={navigate} role="user" />;
-          case "signup-admin":    return <SignUp navigate={navigate} role="admin" />;
           case "login":           return <Login navigate={navigate} defaultEmail={loginEmail} />;
+          case "admin-login":     return <AdminLogin navigate={navigate} defaultEmail={loginEmail} />;
           case "forgot-password": return <ForgotPassword navigate={navigate} />;
           case "dashboard":       return <Dashboard navigate={navigate} />;
           default:                return <Landing navigate={navigate} />;

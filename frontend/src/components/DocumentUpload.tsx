@@ -1026,7 +1026,6 @@ export default function DocumentUpload({ onNavigateToAdmin }: { onNavigateToAdmi
             <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs font-medium text-gray-300">Document Processing Pipeline</p>
-                <span className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">Async / Non-blocking</span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 {[

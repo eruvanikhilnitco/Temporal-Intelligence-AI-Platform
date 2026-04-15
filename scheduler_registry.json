@@ -1,0 +1,50 @@
+{
+  "503c5b4a-5a87-4663-a59a-a400703aa728": {
+    "source_id": "503c5b4a-5a87-4663-a59a-a400703aa728",
+    "source_type": "website",
+    "url": "https://nitcoinc.com",
+    "tenant_id": "",
+    "priority": "medium",
+    "status": "active",
+    "last_crawled": null,
+    "last_successful": null,
+    "next_scheduled": 1776267175.5180311,
+    "update_frequency": 0,
+    "retry_count": 0,
+    "last_error": null,
+    "connection_id": "5964ef51-797a-4ff0-bfa8-56e9925ddf0b",
+    "created_at": 1776163813.7082074
+  },
+  "eedcb084-ee1e-488a-9ae6-777845cd69f1": {
+    "source_id": "eedcb084-ee1e-488a-9ae6-777845cd69f1",
+    "source_type": "website",
+    "url": "https://example.com",
+    "tenant_id": "",
+    "priority": "medium",
+    "status": "active",
+    "last_crawled": null,
+    "last_successful": null,
+    "next_scheduled": 1776267175.5180311,
+    "update_frequency": 0,
+    "retry_count": 0,
+    "last_error": null,
+    "connection_id": "d1ef7d06-8f14-4f31-9742-f86cf9f1a70d",
+    "created_at": 1776172661.989654
+  },
+  "02f9bf4d-7a25-49ac-ae92-e485dee3b835": {
+    "source_id": "02f9bf4d-7a25-49ac-ae92-e485dee3b835",
+    "source_type": "website",
+    "url": "https://nitcoinc.com/",
+    "tenant_id": "",
+    "priority": "medium",
+    "status": "active",
+    "last_crawled": null,
+    "last_successful": null,
+    "next_scheduled": 1776267175.5180311,
+    "update_frequency": 0,
+    "retry_count": 0,
+    "last_error": null,
+    "connection_id": "2fb76baf-be4d-427b-90f8-5d43b2d59626",
+    "created_at": 1776241111.6206095
+  }
+}

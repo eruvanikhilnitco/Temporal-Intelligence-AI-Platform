@@ -32,26 +32,63 @@ async def signup_user(user_data: UserSignUp, db: Session = Depends(get_db)):
 
 @router.post("/signup/admin", response_model=dict)
 async def signup_admin(user_data: UserSignUp, db: Session = Depends(get_db)):
-    """Register an admin account (full system access)"""
-    try:
-        user_data.role = "admin"
-        user = AuthService.register_user(db, user_data)
-        return {"status": "success", "user": user}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Admin signup is disabled — the superadmin account is provisioned at server startup."""
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Admin self-registration is disabled. "
+            "The superadmin account is pre-provisioned by the system. "
+            "Contact your system administrator for access."
+        ),
+    )
 
 
 @router.post("/login", response_model=dict)
 async def login(login_data: UserLogin, db: Session = Depends(get_db)):
-    """Login user and get tokens"""
+    """Login any user (non-admin path) and get tokens. Admin users are redirected to /auth/login/admin."""
     try:
         result = AuthService.login_user(db, login_data)
+        # Block admins from using the standard login endpoint
+        if result["user"].role == "admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Admin accounts must use the admin login portal.",
+            )
         return {
             "status": "success",
             "access_token": result["access_token"],
             "refresh_token": result["refresh_token"],
             "user": result["user"],
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@router.post("/login/admin", response_model=dict)
+async def login_admin(login_data: UserLogin, db: Session = Depends(get_db)):
+    """Admin-only login portal. Validates org email domain and admin role."""
+    from app.services.auth_service import ADMIN_EMAIL_DOMAIN
+    # Enforce org domain at login time too
+    domain = login_data.email.split("@")[-1].lower() if "@" in login_data.email else ""
+    if domain != ADMIN_EMAIL_DOMAIN:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Admin login requires an organisation email (@{ADMIN_EMAIL_DOMAIN}).",
+        )
+    try:
+        result = AuthService.login_user(db, login_data)
+        if result["user"].role != "admin":
+            raise HTTPException(status_code=403, detail="This account does not have admin privileges.")
+        return {
+            "status": "success",
+            "access_token": result["access_token"],
+            "refresh_token": result["refresh_token"],
+            "user": result["user"],
+        }
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
